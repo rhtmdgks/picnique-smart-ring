@@ -1,0 +1,94 @@
+import 'package:flutter/material.dart';
+import 'package:picnique_rosary_healthcare_smartring/providers/user_setting.dart';
+import 'package:picnique_rosary_healthcare_smartring/widgets/setting/background_icon.dart';
+import 'package:picnique_rosary_healthcare_smartring/widgets/setting/setting_chevron_row.dart';
+import 'package:picnique_rosary_healthcare_smartring/widgets/setting/setting_toggle_row.dart';
+import 'package:provider/provider.dart';
+
+class SettingCard extends StatelessWidget {
+  const SettingCard({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Consumer<UserSetting>(
+      builder: (context, userSettingProvider, child) {
+        final List<Map<String, dynamic>> settingRowData = [
+          const {
+            "svg": "search",
+            "title": "스마트반지 찾기",
+            "type": "chevron",
+            "router": "/search-ring-setting",
+          },
+          const {
+            "svg": "heart_plus",
+            "title": "건강 모니터링 설정",
+            "type": "chevron",
+            "router": "/monitoring-setting",
+          },
+          {
+            "svg": "charge",
+            "title": "배터리 부족 알림",
+            "type": "toggle",
+            "isToggleOn": userSettingProvider.isChargeAlarmOn,
+            "onTap": () {
+              userSettingProvider.setIsChargeAlarmOn(
+                !userSettingProvider.isChargeAlarmOn,
+              );
+            },
+          },
+          const {
+            "svg": "download",
+            "title": "펌웨어 업그레이드",
+            "type": "chevron",
+            "router": "/updrade-setting",
+          },
+          const {
+            "svg": "setting",
+            "title": "시스템 설정",
+            "type": "chevron",
+            "router": "/system-setting",
+          },
+        ];
+        return Container(
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.6),
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: Container(
+            padding: EdgeInsets.symmetric(vertical: 16),
+            child: Column(
+              children: [
+                for (var settingRowDatum in settingRowData.asMap().entries)
+                  settingRowDatum.value["type"]! == "chevron"
+                      ? SettingRow(
+                          title: settingRowDatum.value["title"]!,
+                          left: BackgroundIcon(
+                            svg: settingRowDatum.value["svg"]!,
+                          ),
+                          isLast:
+                              settingRowDatum.key == settingRowData.length - 1,
+                          onTap: () {
+                            Navigator.pushNamed(
+                              context,
+                              settingRowDatum.value["router"]!,
+                            );
+                          },
+                        )
+                      : SettingToggleRow(
+                          title: settingRowDatum.value["title"]!,
+                          left: BackgroundIcon(
+                            svg: settingRowDatum.value["svg"]!,
+                          ),
+                          isLast:
+                              settingRowDatum.key == settingRowData.length - 1,
+                          isToggleOn: settingRowDatum.value["isToggleOn"],
+                          onTap: settingRowDatum.value["onTap"],
+                        ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
