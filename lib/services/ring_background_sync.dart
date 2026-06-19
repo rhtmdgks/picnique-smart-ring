@@ -1,3 +1,5 @@
+import 'dart:io' show Platform;
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:picnique_rosary_healthcare_smartring/util/BLEUtil.dart';
@@ -18,6 +20,13 @@ class RingSyncController with ChangeNotifier {
 
   Future<void> run(MethodChannel platform) async {
     if (_status == RingSyncStatus.syncing) return;
+
+    // iOS: QCBandSDK 대량 동기화 시 네이티브 크래시 가능 → 연결 직후 자동 동기화 비활성
+    if (Platform.isIOS) {
+      debugPrint('[SYNC] skipped on iOS (post-connect auto sync disabled)');
+      return;
+    }
+
     _status = RingSyncStatus.syncing;
     _error = null;
     notifyListeners();

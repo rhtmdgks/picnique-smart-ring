@@ -14,76 +14,122 @@ import 'package:picnique_rosary_healthcare_smartring/providers/ring.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:url_launcher/url_launcher.dart'; // pubspec에 추가 필요
+import 'package:picnique_rosary_healthcare_smartring/core/enum/data_type.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/db/db_manager.dart';
 
 import '../db/app_db.dart';
+
+const MethodChannel _blePlatformChannel = MethodChannel(
+  'com.example.picnique_ring/ble',
+);
 
 Future<bool> ensureBluetoothOn(
   BuildContext context, {
   Duration timeout = const Duration(seconds: 12),
 }) async {
-  // 1) 현재 상태
+  if (Platform.isIOS) {
+    return _ensureBluetoothOnIos(context, timeout: timeout);
+  }
+
+  // Android: FlutterBluePlus로 어댑터 상태 확인
   final initial = await FlutterBluePlus.adapterState.first;
   if (initial == BluetoothAdapterState.on) return true;
 
-  if (Platform.isAndroid) {
-    // 2-A) Android: 켜기 요청 + 대기
-    try {
-      await FlutterBluePlus.turnOn(); // 시스템 다이얼로그 (권한/기기 따라 예외 가능)
-    } catch (_) {}
-    try {
-      await FlutterBluePlus.adapterState
-          .firstWhere((s) => s == BluetoothAdapterState.on)
-          .timeout(timeout);
-      return true;
-    } on TimeoutException {
-      return false;
-    }
-  } else if (Platform.isIOS) {
-    if (!context.mounted) return false;
-    // 2-B) iOS: 사용자가 직접 켜야 함 (프로그래매틱 토글 불가)
-    final open =
-        await showCupertinoDialog<bool>(
-          context: context,
-          builder: (ctx) => CupertinoAlertDialog(
-            title: const Text('블루투스가 꺼져 있습니다'),
-            content: const Text('설정에서 블루투스를 켠 뒤 다시 시도해 주세요.'),
-            actions: [
-              CupertinoDialogAction(
-                child: const Text('취소'),
-                onPressed: () => Navigator.of(ctx).pop(false),
-              ),
-              CupertinoDialogAction(
-                isDefaultAction: true,
-                child: const Text('설정 열기'),
-                onPressed: () => Navigator.of(ctx).pop(true),
-              ),
-            ],
-          ),
-        ) ??
-        false;
-
-    if (open) {
-      // 앱 설정 화면 열기 (Bluetooth 화면으로 직접 이동은 불가/비권장)
-      try {
-        await launchUrl(Uri.parse('app-settings:'));
-      } catch (_) {}
-
-      // 사용자가 설정에서 블루투스를 켜고 돌아올 때까지 대기
-      try {
-        await FlutterBluePlus.adapterState
-            .firstWhere((s) => s == BluetoothAdapterState.on)
-            .timeout(timeout);
-        return true;
-      } on TimeoutException {
-        return false;
-      }
-    }
-    return false;
-  } else {
-    // 그 외 플랫폼은 일단 통과
+  try {
+    await FlutterBluePlus.turnOn();
+  } catch (_) {}
+  try {
+    await FlutterBluePlus.adapterState
+        .firstWhere((s) => s == BluetoothAdapterState.on)
+        .timeout(timeout);
     return true;
+  } on TimeoutException {
+    return false;
   }
+}
+
+/// iOS는 스캔/연결에 네이티브 CBCentralManager를 사용한다.
+/// FlutterBluePlus.adapterState는 꺼짐으로 오탐하는 경우가 많아 네이티브 상태를 본다.
+Future<bool> _ensureBluetoothOnIos(
+  BuildContext context, {
+  required Duration timeout,
+}) async {
+  const initWait = Duration(seconds: 3);
+  final initDeadline = DateTime.now().add(initWait);
+
+  String? state;
+  while (DateTime.now().isBefore(initDeadline)) {
+    try {
+      state = await _blePlatformChannel.invokeMethod<String>(
+        'getBluetoothState',
+      );
+    } on PlatformException catch (e) {
+      debugPrint('[BLE] getBluetoothState error: ${e.code}');
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      continue;
+    } catch (_) {
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      continue;
+    }
+
+    if (state == 'on') return true;
+    if (state == 'off' ||
+        state == 'unauthorized' ||
+        state == 'unsupported') {
+      break;
+    }
+    // unknown / resetting → CBCentralManager 초기화 대기
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+  }
+
+  if (state == 'on') return true;
+  if (!context.mounted) return false;
+
+  final unauthorized = state == 'unauthorized';
+  final open =
+      await showCupertinoDialog<bool>(
+        context: context,
+        builder: (ctx) => CupertinoAlertDialog(
+          title: Text(
+            unauthorized ? '블루투스 권한이 필요합니다' : '블루투스가 꺼져 있습니다',
+          ),
+          content: Text(
+            unauthorized
+                ? '설정에서 이 앱의 블루투스 권한을 허용한 뒤 다시 시도해 주세요.'
+                : '설정에서 블루투스를 켠 뒤 다시 시도해 주세요.',
+          ),
+          actions: [
+            CupertinoDialogAction(
+              child: const Text('취소'),
+              onPressed: () => Navigator.of(ctx).pop(false),
+            ),
+            CupertinoDialogAction(
+              isDefaultAction: true,
+              child: const Text('설정 열기'),
+              onPressed: () => Navigator.of(ctx).pop(true),
+            ),
+          ],
+        ),
+      ) ??
+      false;
+
+  if (!open) return false;
+
+  try {
+    await launchUrl(Uri.parse('app-settings:'));
+  } catch (_) {}
+
+  final deadline = DateTime.now().add(timeout);
+  while (DateTime.now().isBefore(deadline)) {
+    try {
+      state = await _blePlatformChannel.invokeMethod<String>(
+        'getBluetoothState',
+      );
+      if (state == 'on') return true;
+    } catch (_) {}
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+  }
+  return false;
 }
 
 /// 한 번에: 현재 설정 읽어서 print → 전부 ON 시도 → 결과 재확인 print
@@ -872,6 +918,76 @@ Future<void> syncAndSaveSportDetails(
   await db.saveSportDetailsFromNative(details.cast<Map<String, dynamic>>());
 }
 
+/// 반지에서 오늘 활동 요약을 직접 조회한다. (DB 동기화 없이 즉시 반영용)
+Future<Map<String, int>?> fetchTodaySportFromRing(MethodChannel platform) async {
+  try {
+    final res = await platform.invokeMethod<dynamic>('syncTodaySport');
+    if (res is! Map) return null;
+
+    int asInt(dynamic value) {
+      if (value is num) return value.toInt();
+      return int.tryParse(value?.toString() ?? '') ?? 0;
+    }
+
+    return {
+      'totalSteps': asInt(res['totalSteps']),
+      'runningSteps': asInt(res['runningSteps']),
+      'calorie': asInt(res['calorie']),
+      'walkDistance': asInt(res['walkDistance']),
+      'sportDuration': asInt(res['sportDuration']),
+    };
+  } catch (e) {
+    debugPrint('[SPORT_TODAY] fetch failed: $e');
+    return null;
+  }
+}
+
+Future<void> saveManualStressReading(int stress) async {
+  if (stress <= 0) return;
+  final db = DbManager.I.heartDB;
+  await db.into(db.stressDetails).insert(
+    StressDetailsCompanion.insert(date: DateTime.now(), stress: stress),
+  );
+}
+
+int _asMeasurementInt(dynamic value) {
+  if (value is num) return value.toInt();
+  return int.tryParse(value?.toString() ?? '') ?? 0;
+}
+
+/// 수동 측정 결과를 DB에 저장하고 표시할 숫자값을 반환한다.
+Future<int?> persistManualMeasurement({
+  required DataType dataType,
+  required Map<dynamic, dynamic> result,
+}) async {
+  final now = DateTime.now();
+  final db = DbManager.I.heartDB;
+
+  switch (dataType) {
+    case DataType.HeartRate:
+      final hr = _asMeasurementInt(result['hr'] ?? result['value']);
+      if (hr <= 0) return null;
+      await db.insertHeartDetail(
+        HeartDetailsCompanion.insert(date: now, bpm: hr),
+      );
+      return hr;
+    case DataType.Oxygen:
+      final spo2 = _asMeasurementInt(result['spo2'] ?? result['value']);
+      if (spo2 <= 0) return null;
+      await db.insertSpO2(
+        BloodOxygenDetailsCompanion.insert(date: now, spo2: spo2),
+      );
+      return spo2;
+    case DataType.Stress:
+      final stress = _asMeasurementInt(result['pressure'] ?? result['value']);
+      if (stress <= 0) return null;
+      await saveManualStressReading(stress);
+      return stress;
+    default:
+      return null;
+  }
+}
+
 Future<void> syncRecent7DaysStressToDb(
   MethodChannel platform, {
   bool includeZeros = false,
@@ -1017,6 +1133,12 @@ Future<void> syncRecent3DaysOxygenToDb(
   MethodChannel platform, {
   bool includeZeros = false,
 }) async {
+  // iOS QCBandSDK: getBloodOxygenData 응답 파싱 중 프로세스 크래시 가능
+  if (Platform.isIOS) {
+    debugPrint("[OXY_SYNC] skipped on iOS (SDK stability)");
+    return;
+  }
+
   final db = DbManager.I.heartDB;
   final startedAt = DateTime.now();
   debugPrint("[OXY_SYNC] start includeZeros=$includeZeros");

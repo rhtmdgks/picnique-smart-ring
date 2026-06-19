@@ -19,7 +19,15 @@ final class IosBleBridge: NSObject {
 
   private var eventSink: FlutterEventSink?
 
-  private var central: CBCentralManager!
+  private var _central: CBCentralManager?
+
+  private var central: CBCentralManager {
+    if let c = _central { return c }
+    let c = CBCentralManager(delegate: self, queue: nil)
+    _central = c
+    return c
+  }
+
   private var peripherals: [UUID: CBPeripheral] = [:]
   private var connected: CBPeripheral?
   private var scanState: ScanState = .idle
@@ -30,11 +38,11 @@ final class IosBleBridge: NSObject {
 
   private var touchCount: Int = 0
   private var touchObserver: NSObjectProtocol?
+  private var realtimeStepHooked = false
   private let mainQueue = DispatchQueue.main
 
   init(messenger: FlutterBinaryMessenger) {
     super.init()
-    central = CBCentralManager(delegate: self, queue: nil)
 
     methodChannel = FlutterMethodChannel(name: methodChannelName, binaryMessenger: messenger)
     methodChannel.setMethodCallHandler(handle)
@@ -55,6 +63,8 @@ final class IosBleBridge: NSObject {
       startScan(namePrefix: prefix, timeoutMs: timeout, result: result)
     case "stopScan":
       stopScan(result: result)
+    case "getBluetoothState":
+      result(bluetoothStateString())
     case "connectDirectly":
       let addr = (call.arguments as? [String: Any])?["deviceAddress"] as? String
       connectDirectly(deviceAddress: addr, result: result)
@@ -114,8 +124,10 @@ final class IosBleBridge: NSObject {
     case "writeHrvSetting":
       let isEnable = (call.arguments as? [String: Any])?["isEnable"] as? Bool ?? true
       writeHrvSetting(isEnable: isEnable, result: result)
-    case "enableRealtimeNotifications", "disableRealtimeNotifications", "enableRealtime", "disableRealtime":
-      result(true) // no-op on iOS
+    case "enableRealtimeNotifications", "enableRealtime":
+      enableRealtimeNotifications(result: result)
+    case "disableRealtimeNotifications", "disableRealtime":
+      disableRealtimeNotifications(result: result)
     case "syncSleepNew":
       let offset = (call.arguments as? [String: Any])?["offset"] as? Int ?? 0
       syncSleepNew(offset: offset, result: result)
@@ -177,6 +189,17 @@ final class IosBleBridge: NSObject {
     }
   }
 
+  private func bluetoothStateString() -> String {
+    switch central.state {
+    case .poweredOn: return "on"
+    case .poweredOff: return "off"
+    case .unauthorized: return "unauthorized"
+    case .unsupported: return "unsupported"
+    case .resetting: return "resetting"
+    default: return "unknown"
+    }
+  }
+
   // MARK: - Scan
   private func startScan(namePrefix: String?, timeoutMs: Int, result: @escaping FlutterResult) {
     guard central.state == .poweredOn else {
@@ -225,6 +248,12 @@ final class IosBleBridge: NSObject {
     } else {
       result(FlutterError(code: "NOT_FOUND", message: "Peripheral not found for \(addr)", details: nil))
       return
+    }
+
+    // 스캔 중 연결 시 CoreBluetooth/SDK 충돌 방지
+    if scanState == .scanning {
+      central.stopScan()
+      scanState = .idle
     }
 
     connected = peripheral
@@ -660,6 +689,29 @@ final class IosBleBridge: NSObject {
     })
   }
 
+  private func enableRealtimeNotifications(result: @escaping FlutterResult) {
+    let manager = QCSDKManager.shareInstance()
+    manager.currentStepInfo = { [weak self] step, calorie, distance in
+      guard let self = self else { return }
+      self.mainQueue.async {
+        self.emit([
+          "type": "rtSportSummary",
+          "steps": step,
+          "calorie": calorie,
+          "distance": distance
+        ])
+      }
+    }
+    realtimeStepHooked = true
+    result(true)
+  }
+
+  private func disableRealtimeNotifications(result: @escaping FlutterResult) {
+    QCSDKManager.shareInstance().currentStepInfo = { _, _, _ in }
+    realtimeStepHooked = false
+    result(true)
+  }
+
   private func syncSportDetail(dayOffset: Int, result: @escaping FlutterResult) {
     let clamped = max(0, min(dayOffset, 6))
     QCSDKCmdCreator.getSportDetailData(
@@ -741,8 +793,8 @@ final class IosBleBridge: NSObject {
   }
 
   private func syncBloodOxygen(result: @escaping FlutterResult) {
-    let dayIndexes = Array(0...6)
-    let group = DispatchGroup()
+    // iOS SDK는 SpO2 일별 요청 시 malformed 응답에서 프로세스 크래시 가능 → 최소 범위만 조회
+    let dayIndexes = Array(0...2)
     var entries: [[String: Any]] = []
     var lastError: NSError?
 
@@ -752,73 +804,77 @@ final class IosBleBridge: NSObject {
     formatter.dateFormat = "yyyy-MM-dd"
 
     let calendar = Calendar.current
-    let lock = NSLock()
 
-    for dayIndex in dayIndexes {
-      group.enter()
-      QCSDKCmdCreator.getBloodOxygenData(byDayIndex: dayIndex) { data, error in
-        defer { group.leave() }
-        if let err = error as NSError? {
-          lastError = err
-          return
-        }
-        guard let list = data as? [QCBloodOxygenModel], !list.isEmpty else {
-          return
-        }
+    func appendEntries(from list: [QCBloodOxygenModel]) {
+      var perDay: [Date: (min: [Int], max: [Int])] = [:]
 
-        var perDay: [Date: (min: [Int], max: [Int])] = [:]
+      for item in list {
+        guard let date = item.date else { continue }
+        let dayStart = calendar.startOfDay(for: date)
+        let hour = calendar.component(.hour, from: date)
 
-        for item in list {
-          guard let date = item.date else { continue }
-          let dayStart = calendar.startOfDay(for: date)
-          let hour = calendar.component(.hour, from: date)
+        var record = perDay[dayStart] ?? (min: Array(repeating: 0, count: 24),
+                                          max: Array(repeating: 0, count: 24))
 
-          var record = perDay[dayStart] ?? (min: Array(repeating: 0, count: 24),
-                                            max: Array(repeating: 0, count: 24))
+        let vMin = Int(item.minSoa2)
+        let vMax = Int(item.maxSoa2)
+        let v = Int(item.soa2)
 
-          let vMin = Int(item.minSoa2)
-          let vMax = Int(item.maxSoa2)
-          let v = Int(item.soa2)
+        let minVal = vMin > 0 ? vMin : v
+        let maxVal = vMax > 0 ? vMax : v
 
-          let minVal = vMin > 0 ? vMin : v
-          let maxVal = vMax > 0 ? vMax : v
-
-          if minVal > 0 {
-            if record.min[hour] == 0 || minVal < record.min[hour] {
-              record.min[hour] = minVal
-            }
+        if minVal > 0 {
+          if record.min[hour] == 0 || minVal < record.min[hour] {
+            record.min[hour] = minVal
           }
-          if maxVal > 0 {
-            if maxVal > record.max[hour] {
-              record.max[hour] = maxVal
-            }
+        }
+        if maxVal > 0 {
+          if maxVal > record.max[hour] {
+            record.max[hour] = maxVal
           }
-
-          perDay[dayStart] = record
         }
 
-        lock.lock()
-        for (dayStart, arrays) in perDay {
-          let dateStr = formatter.string(from: dayStart)
-          let unixTime = Int(dayStart.timeIntervalSince1970)
-          entries.append([
-            "dateStr": dateStr,
-            "minArray": arrays.min,
-            "maxArray": arrays.max,
-            "unix_time": unixTime,
-          ])
-        }
-        lock.unlock()
+        perDay[dayStart] = record
+      }
+
+      for (dayStart, arrays) in perDay {
+        let dateStr = formatter.string(from: dayStart)
+        let unixTime = Int(dayStart.timeIntervalSince1970)
+        entries.append([
+          "dateStr": dateStr,
+          "minArray": arrays.min,
+          "maxArray": arrays.max,
+          "unix_time": unixTime,
+        ])
       }
     }
 
-    group.notify(queue: .main) {
-      if entries.isEmpty, let err = lastError {
-        result(FlutterError(code: "BLOOD_OXYGEN_FAIL", message: err.localizedDescription, details: nil))
+    func fetchDay(at index: Int) {
+      guard index < dayIndexes.count else {
+        if entries.isEmpty, let err = lastError {
+          result(FlutterError(code: "BLOOD_OXYGEN_FAIL", message: err.localizedDescription, details: nil))
+        } else {
+          result(entries)
+        }
         return
       }
-      result(entries)
+
+      let dayIndex = dayIndexes[index]
+      QCSDKCmdCreator.getBloodOxygenData(byDayIndex: dayIndex) { data, error in
+        if let err = error as NSError? {
+          lastError = err
+        } else if let list = data as? [QCBloodOxygenModel], !list.isEmpty {
+          appendEntries(from: list)
+        }
+
+        // SDK BLE 응답 파싱 충돌 방지: 일별 요청을 순차 처리
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+          fetchDay(at: index + 1)
+        }
+      }
     }
+
+    fetchDay(at: 0)
   }
 
   private func syncManualBloodOxygen(result: @escaping FlutterResult) {
@@ -887,25 +943,76 @@ final class IosBleBridge: NSObject {
   }
 
   private func syncManualPressure(result: @escaping FlutterResult) {
-    QCSDKCmdCreator.getSchedualStressData(withDates: [0]) { data, error in
-      if let err = error {
-        result(FlutterError(code: "PRESSURE_MANUAL_FAIL", message: err.localizedDescription, details: nil))
-        return
+    let manager = QCSDKManager.shareInstance()
+    var replied = false
+    var latestValue = 0
+
+    func extractStress(_ value: Any?) -> Int {
+      if let n = value as? NSNumber { return n.intValue }
+      if let i = value as? Int { return i }
+      if let dict = value as? [AnyHashable: Any] {
+        for key in ["pressure", "value", "stress"] {
+          if let n = dict[key] as? NSNumber { return n.intValue }
+          if let i = dict[key] as? Int { return i }
+        }
       }
-      guard let list = data as? [QCStressModel], let model = list.first else {
-        result(FlutterError(code: "PRESSURE_MANUAL_EMPTY", message: "no stress data", details: nil))
-        return
-      }
-      let latest = model.stresses.reversed().first { $0.intValue > 0 }?.intValue ?? 0
-      if latest <= 0 {
-        result(FlutterError(code: "PRESSURE_MANUAL_EMPTY", message: "no stress value", details: nil))
-        return
-      }
-      result([
-        "pressure": latest,
-        "value": latest
-      ])
+      return 0
     }
+
+    func finishOk(_ value: Int) {
+      guard !replied else { return }
+      replied = true
+      timeoutWork?.cancel()
+      result(["pressure": value, "value": value])
+    }
+
+    func finishErr(_ code: String, _ message: String) {
+      guard !replied else { return }
+      replied = true
+      timeoutWork?.cancel()
+      result(FlutterError(code: code, message: message, details: nil))
+    }
+
+    var timeoutWork: DispatchWorkItem?
+    let work = DispatchWorkItem {
+      if latestValue > 0 {
+        finishOk(latestValue)
+      } else {
+        finishErr("PRESSURE_MANUAL_TIMEOUT", "manual stress timeout")
+      }
+    }
+    timeoutWork = work
+    mainQueue.asyncAfter(deadline: .now() + 45, execute: work)
+
+    // Android manualModePressure와 동일: 링에서 실시간 스트레스 측정
+    manager.startToMeasuring(
+      withOperateType: .stress,
+      timeout: 45,
+      measuringHandle: { measuringResult in
+        let v = extractStress(measuringResult)
+        if v > 0 { latestValue = v }
+      },
+      completedHandle: { isSuccess, finalResult, error in
+        let finalValue = extractStress(finalResult)
+        if finalValue > 0 {
+          finishOk(finalValue)
+          return
+        }
+        if latestValue > 0 {
+          finishOk(latestValue)
+          return
+        }
+        if let err = error {
+          finishErr("PRESSURE_MANUAL_FAIL", err.localizedDescription)
+          return
+        }
+        if !isSuccess {
+          finishErr("PRESSURE_MANUAL_FAIL", "stress measurement failed")
+          return
+        }
+        finishErr("PRESSURE_MANUAL_EMPTY", "no stress data")
+      }
+    )
   }
 
   private func syncManualHeartRate(result: @escaping FlutterResult) {
@@ -1167,12 +1274,21 @@ extension IosBleBridge: CBCentralManagerDelegate {
   func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
     connectTimeoutWork?.cancel()
     connectTimeoutWork = nil
-    // SDK에 퍼리퍼럴 등록
+    // SDK에 퍼리퍼럴 등록 → setTime 후 Flutter에 연결 완료 통지
     QCSDKManager.shareInstance().add(peripheral) { [weak self] _ in
       guard let self = self else { return }
-      self.pendingConnect?(true)
-      self.pendingConnect = nil
+      QCSDKCmdCreator.setTime(Date(), success: { _ in
+        self.finishPendingConnect()
+      }, failed: {
+        // setTime 실패해도 연결 자체는 유지
+        self.finishPendingConnect()
+      })
     }
+  }
+
+  private func finishPendingConnect() {
+    pendingConnect?(true)
+    pendingConnect = nil
   }
 
   func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {

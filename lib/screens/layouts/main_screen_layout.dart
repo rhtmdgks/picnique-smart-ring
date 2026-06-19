@@ -5,7 +5,12 @@ import 'package:picnique_rosary_healthcare_smartring/widgets/bottom_nav_bar.dart
 import 'package:picnique_rosary_healthcare_smartring/widgets/main_app_bar.dart';
 
 class MainScreenLayout extends StatefulWidget {
-  const MainScreenLayout({super.key});
+  const MainScreenLayout({
+    super.key,
+    this.onSignOut,
+  });
+
+  final Future<void> Function()? onSignOut;
 
   @override
   State<MainScreenLayout> createState() => _MainScreenLayoutState();
@@ -25,7 +30,10 @@ class _MainScreenLayoutState extends State<MainScreenLayout> {
     return BackgroundLayout(
       child: Scaffold(
         backgroundColor: Colors.transparent,
-        appBar: MainAppBar(title: tabItems.elementAt(currentIndex).title),
+        appBar: MainAppBar(
+          title: tabItems.elementAt(currentIndex).title,
+          onSignOut: widget.onSignOut,
+        ),
         body: tabItems.elementAt(currentIndex).screen,
         bottomNavigationBar: BottomNavBar(
           index: currentIndex,

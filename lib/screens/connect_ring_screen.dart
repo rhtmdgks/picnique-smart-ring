@@ -3,12 +3,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'dart:io' show Platform;
+import 'package:picnique_rosary_healthcare_smartring/services/ring_live_activity.dart';
 import 'package:picnique_rosary_healthcare_smartring/util/BLERealtimeLogger.dart';
 import 'package:provider/provider.dart';
 
 import 'package:picnique_rosary_healthcare_smartring/providers/ring.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_background_sync.dart';
 import 'package:picnique_rosary_healthcare_smartring/screens/layouts/background_layout.dart';
+import 'package:picnique_rosary_healthcare_smartring/widgets/setting/ring_connecting_overlay.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/setting/ring_connect_list_card.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/setting/ring_connect_status_card.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/sub_app_bar.dart';
@@ -51,6 +53,7 @@ class _ConnectRingSettingScreenState extends State<ConnectRingSettingScreen> {
 
   bool _isScanning = false;
   bool _connecting = false;
+  String? _connectingDeviceName;
 
   @override
   void initState() {
@@ -62,7 +65,9 @@ class _ConnectRingSettingScreenState extends State<ConnectRingSettingScreen> {
   void dispose() {
     _scanSub?.cancel();
     _iosScanSub?.cancel();
-    FlutterBluePlus.stopScan();
+    if (Platform.isAndroid) {
+      FlutterBluePlus.stopScan();
+    }
     super.dispose();
   }
 
@@ -221,6 +226,9 @@ class _ConnectRingSettingScreenState extends State<ConnectRingSettingScreen> {
       await fgChannel.invokeMethod('stopService');
     } catch (_) {}
     try {
+      await context.read<RingLiveActivity>().stop();
+    } catch (_) {}
+    try {
       await BleRealtimeLogger.stop();
     } catch (_) {}
   }
@@ -245,7 +253,9 @@ class _ConnectRingSettingScreenState extends State<ConnectRingSettingScreen> {
           ? found['name']!
           : '(이름 없음)';
 
-      // 단일 BLE 스택만 사용: 네이티브 SDK 직접 연결 (FBP device.connect 제거)
+      if (mounted) {
+        setState(() => _connectingDeviceName = deviceName);
+      }
       debugPrint('[CONNECT] connectDirectly begin');
       await _platform
           .invokeMethod("connectDirectly", <String, dynamic>{
@@ -254,16 +264,20 @@ class _ConnectRingSettingScreenState extends State<ConnectRingSettingScreen> {
           .timeout(const Duration(seconds: 60));
       debugPrint('[CONNECT] connectDirectly done');
 
-      // 연결 완료 대기: 디바이스가 명령에 응답할 때까지 확인(고정 지연 대체)
-      final ready = await _waitDeviceReady();
-      if (!ready) {
-        throw TimeoutException('device not ready after connect');
-      }
+      // iOS QCBand SDK: setTime 이후에야 배터리/동기화 명령이 안정적으로 동작한다.
+      await _syncTimeAfterConnect();
 
+      // 네이티브 연결이 성립된 직후 UI 상태를 반영한다.
+      // 배터리 응답 대기 실패만으로 연결 상태를 되돌리지 않는다.
       ring.setIsConnected(true);
       ring.setName(deviceName);
       ring.setAddress(address);
       await ring.persist();
+
+      final ready = await _waitDeviceReady();
+      if (!ready) {
+        debugPrint('[CONNECT] device ready check failed, keeping connection');
+      }
 
       // Phase A(경량): 배터리만 즉시 조회
       if (!mounted) return;
@@ -271,7 +285,7 @@ class _ConnectRingSettingScreenState extends State<ConnectRingSettingScreen> {
 
       // 실시간 알림 + 포그라운드 서비스 시작. 끊김 이벤트는 여기서 감지.
       debugPrint('[CONNECT] realtime start');
-      await BleRealtimeLogger.start(
+      await context.read<RingLiveActivity>().start(
         onDisconnected: () {
           ring.setIsConnected(false);
         },
@@ -289,8 +303,16 @@ class _ConnectRingSettingScreenState extends State<ConnectRingSettingScreen> {
         SnackBar(content: Text('연결되었습니다: ${ring.name ?? "(알 수 없음)"}')),
       );
 
+      // 설정 화면으로 돌아가 연결해제 버튼이 바로 보이도록 한다.
+      Navigator.of(context).pop();
+
       // Phase B(백그라운드): 최근 데이터 동기화는 UI를 막지 않고 진행.
-      unawaited(sync.run(_platform));
+      // iOS: 네이티브 QCBandSDK와 FlutterBluePlus 이중 스택 충돌·파싱 크래시 회피
+      if (!Platform.isIOS) {
+        unawaited(sync.run(_platform));
+      } else {
+        debugPrint('[CONNECT] skip post-connect auto sync on iOS');
+      }
     } on TimeoutException {
       debugPrint('[CONNECT] timeout at outer block');
       if (mounted) {
@@ -320,6 +342,17 @@ class _ConnectRingSettingScreenState extends State<ConnectRingSettingScreen> {
     }
   }
 
+  Future<void> _syncTimeAfterConnect() async {
+    try {
+      await _platform
+          .invokeMethod('syncTimeAndGetCoreFeatures')
+          .timeout(const Duration(seconds: 15));
+      debugPrint('[CONNECT] syncTime done');
+    } catch (e) {
+      debugPrint('[CONNECT] syncTime failed (non-fatal): $e');
+    }
+  }
+
   /// 연결 직후 디바이스가 실제로 명령에 응답하는지 확인한다.
   /// Android는 connectDirectly가 즉시 반환하므로(준비 전), 배터리 조회로 준비 완료를 판단.
   /// iOS는 didConnect 이후 반환되므로 대부분 첫 시도에 성공한다.
@@ -339,9 +372,16 @@ class _ConnectRingSettingScreenState extends State<ConnectRingSettingScreen> {
     return false;
   }
 
-  void _setConnecting(bool value) {
+  void _setConnecting(bool value, {String? deviceName}) {
     if (!mounted) return;
-    setState(() => _connecting = value);
+    setState(() {
+      _connecting = value;
+      if (value) {
+        _connectingDeviceName = deviceName;
+      } else {
+        _connectingDeviceName = null;
+      }
+    });
   }
 
   // 안전한 이름/주소 추출
@@ -399,10 +439,7 @@ class _ConnectRingSettingScreenState extends State<ConnectRingSettingScreen> {
               ),
             ),
             if (_connecting)
-              Container(
-                color: Colors.black.withValues(alpha: 0.35),
-                child: const Center(child: CircularProgressIndicator()),
-              ),
+              RingConnectingOverlay(deviceName: _connectingDeviceName),
           ],
         ),
       ),

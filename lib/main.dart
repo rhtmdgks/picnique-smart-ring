@@ -7,11 +7,11 @@ import 'package:picnique_rosary_healthcare_smartring/providers/db/db_manager.dar
 import 'package:picnique_rosary_healthcare_smartring/providers/monitoring_setting.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/ring.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/user_setting.dart';
+import 'package:picnique_rosary_healthcare_smartring/screens/community/wyd_community_placeholder_screen.dart';
 import 'package:picnique_rosary_healthcare_smartring/screens/connect_ring_screen.dart';
 import 'package:picnique_rosary_healthcare_smartring/screens/layouts/main_screen_layout.dart';
 import 'package:picnique_rosary_healthcare_smartring/screens/monitoring_setting_screen.dart';
 import 'package:picnique_rosary_healthcare_smartring/screens/sub/catholic_info_screen.dart';
-import 'package:picnique_rosary_healthcare_smartring/screens/sub/catholic_rosary_mystery_screen.dart';
 import 'package:picnique_rosary_healthcare_smartring/screens/sub/catholic_rosary_screen.dart';
 import 'package:picnique_rosary_healthcare_smartring/screens/sub/catholic_rosary_statistics_screen.dart';
 import 'package:picnique_rosary_healthcare_smartring/screens/sub/health_care_activity_screen.dart';
@@ -20,11 +20,18 @@ import 'package:picnique_rosary_healthcare_smartring/screens/sub/health_care_oxy
 import 'package:picnique_rosary_healthcare_smartring/screens/sub/health_care_sleep_screen.dart';
 import 'package:picnique_rosary_healthcare_smartring/screens/sub/health_care_stress_screen.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_background_sync.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/ring_live_activity.dart';
 import 'package:provider/provider.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await DbManager.I.open();
+
+  try {
+    await DbManager.I.open();
+  } catch (e, st) {
+    debugPrint('DbManager.open failed: $e\n$st');
+  }
+
   await _ensureBatteryOptExclusion();
   runApp(
     MultiProvider(
@@ -33,46 +40,60 @@ void main() async {
           create: (_) => DbManager.I,
           dispose: (_, m) => m.close(),
         ),
-        ProxyProvider<DbManager, AppDatabase>(update: (_, m, __) => m.appDB),
+        ProxyProvider<DbManager, AppDatabase>(
+          update: (_, m, _) => m.appDB,
+        ),
         ChangeNotifierProvider(create: (_) => Ring()..loadFromPrefs()),
         ChangeNotifierProvider(create: (_) => UserSetting()),
         ChangeNotifierProvider(create: (_) => MonitoringSetting()),
         ChangeNotifierProvider(create: (_) => RingSyncController()),
+        ChangeNotifierProvider(create: (_) => RingLiveActivity()),
       ],
-      child: const MainApp(),
+      child: const MyApp(),
     ),
   );
 }
 
-class MainApp extends StatelessWidget {
-  const MainApp({super.key});
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      title: 'Picnique Smart Ring',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        brightness: Brightness.dark,
+        fontFamily: 'Paperlogy',
+        scaffoldBackgroundColor: const Color(0xFF1A1028),
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFF500EAD),
+          brightness: Brightness.dark,
+        ),
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Colors.transparent,
+          foregroundColor: Colors.white,
+          elevation: 0,
+        ),
+      ),
       home: const MainScreenLayout(),
       routes: {
-        '/connect-ring-setting': (context) => ConnectRingSettingScreen(),
-        '/search-ring-setting': (context) => MonitoringSettingScreen(),
-        '/monitoring-setting': (context) => MonitoringSettingScreen(),
-        '/updrade-setting': (context) => MonitoringSettingScreen(),
-        '/system-setting': (context) => MonitoringSettingScreen(),
-        '/health-heart-rate-detail': (context) => HealthCareHeartScreen(),
-        '/health-oxygen-detail': (context) => HealthCareOxygenScreen(),
-        '/health-care-stress-detail': (context) => HealthCareStressScreen(),
-        '/health-care-activity-detail': (context) => HealthCareActivityScreen(),
-        '/health-care-sleep-detail': (context) => HealthCareSleepScreen(),
-        '/catholic-rosary-screen': (context) => CatholicRosaryScreen(),
-        '/catholic-rosary-statistics-screen': (context) =>
-            CatholicRosaryStatisticsScreen(),
-        '/catholic-info-screen': (context) => CatholicInfoScreen(),
-        '/catholic-rosary-mystery-screen': (context) =>
-            const CatholicRosaryMysteryScreen(),
+        '/connect-ring-setting': (_) => ConnectRingSettingScreen(),
+        '/search-ring-setting': (_) => MonitoringSettingScreen(),
+        '/monitoring-setting': (_) => MonitoringSettingScreen(),
+        '/updrade-setting': (_) => MonitoringSettingScreen(),
+        '/system-setting': (_) => MonitoringSettingScreen(),
+        '/health-heart-rate-detail': (_) => const HealthCareHeartScreen(),
+        '/health-oxygen-detail': (_) => const HealthCareOxygenScreen(),
+        '/health-care-stress-detail': (_) => const HealthCareStressScreen(),
+        '/health-care-activity-detail': (_) => const HealthCareActivityScreen(),
+        '/health-care-sleep-detail': (_) => const HealthCareSleepScreen(),
+        '/catholic-info-screen': (_) => CatholicInfoScreen(),
+        '/catholic-rosary-screen': (_) => const CatholicRosaryScreen(),
+        '/wyd-community': (_) => const WydCommunityPlaceholderScreen(),
+        '/catholic-rosary-statistics-screen': (_) =>
+            const CatholicRosaryStatisticsScreen(),
       },
-      theme: ThemeData(
-        fontFamily: 'Paperlogy',
-        scaffoldBackgroundColor: const Color(0xFF1D1B29),
-      ),
     );
   }
 }

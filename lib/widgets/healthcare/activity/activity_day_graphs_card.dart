@@ -8,7 +8,8 @@ import 'package:picnique_rosary_healthcare_smartring/db/app_db.dart';
 import 'package:picnique_rosary_healthcare_smartring/util/graph.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/db/db_manager.dart';
 import 'package:drift/drift.dart' as drift;
-import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/graph/bar_graph.dart';
+import 'package:picnique_rosary_healthcare_smartring/core/charts/health_chart_theme.dart';
+import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/charts/health_bar_chart.dart';
 
 class ActivityDayGraphsCard extends StatefulWidget {
   final DateTime date;
@@ -272,17 +273,16 @@ class ActivityGraphCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 20),
-          Container(
-            padding: const EdgeInsets.only(left: 12),
+          SizedBox(
             width: double.infinity,
-            height: 200,
-            color: Colors.transparent,
-            child: BarGraph(
-              dataType: dataType,
-              selectedRange: ToggleRange.day,
+            height: HealthChartTheme.chartHeight * 0.72,
+            child: HealthBarChart(
               data: hourCalories,
+              dataType: dataType,
+              range: ToggleRange.day,
+              unit: unit,
+              goalLineY: goal.toDouble(),
               selectedDate: selectedDate,
-              tooltipColor: tooltipColor,
             ),
           ),
         ],

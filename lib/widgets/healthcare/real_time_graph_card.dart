@@ -12,20 +12,13 @@ import 'package:picnique_rosary_healthcare_smartring/db/app_db.dart';
 import 'package:picnique_rosary_healthcare_smartring/util/BLEUtil.dart';
 import 'package:picnique_rosary_healthcare_smartring/util/graph.dart';
 import 'package:picnique_rosary_healthcare_smartring/util/sleep.dart';
-import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/graph/bar_graph.dart';
-import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/graph/dot_graph.dart';
-import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/graph/dot/dot_halfyearly_graph.dart';
-import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/graph/dot/dot_monthly_graph.dart';
-import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/graph/dot/dot_weekly_graph.dart';
-import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/graph/dot/dot_yearly_graph.dart';
-import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/graph/dot/dot_daily_graph.dart';
-import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/graph/stacked_bar/stacked_bar_daily_graph.dart';
-import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/graph/stacked_bar/stacked_bar_halfyearly_graph.dart';
-import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/graph/stacked_bar/stacked_bar_monthly_graph.dart';
-import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/graph/stacked_bar/stacked_bar_weekly_graph.dart';
-import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/graph/stacked_bar/stacked_bar_yearly_graph.dart';
+import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/charts/health_area_line_chart.dart';
+import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/charts/health_bar_chart.dart';
+import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/charts/health_sleep_timeline_chart.dart';
+import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/charts/health_sleep_stacked_chart.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/range_toggle.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/db/db_manager.dart';
+import 'package:picnique_rosary_healthcare_smartring/core/charts/health_chart_theme.dart';
 import 'package:drift/drift.dart' hide Column;
 
 // [ ]: 나중에 그래프 별로 분리하기...
@@ -628,7 +621,6 @@ class RealTimeGraphCard extends StatefulWidget {
 
 class _RealTimeGraphCardState extends State<RealTimeGraphCard> {
   // DB 기반 시리즈 캐시
-  List<FlSpot> _entireData = [];
   List<FlSpot> _dotGroups = [];
 
   List<BarChartGroupData> barData = [];
@@ -714,7 +706,7 @@ class _RealTimeGraphCardState extends State<RealTimeGraphCard> {
     }
   }
 
-  refreshDB({DateTime? anchor}) {
+  void refreshDB({DateTime? anchor}) {
     if (anchor != null) {
       _stackedAnchor = anchor;
       _stackedData = const _GraphData(daily: [], monthLike: []);
@@ -736,7 +728,6 @@ class _RealTimeGraphCardState extends State<RealTimeGraphCard> {
   Future<void> _refreshDbSeries(ToggleRange range, {DateTime? anchor}) async {
     setState(() => _dbLoading = true);
     try {
-      _entireData = await _fetchEntireSeries();
       final dayAnchor = anchor ?? selectedDate;
       switch (range) {
         case ToggleRange.day:
@@ -919,41 +910,6 @@ class _RealTimeGraphCardState extends State<RealTimeGraphCard> {
           return totalSleepMinByDay.entries.toList();
         }
     }
-  }
-
-  // -------------------------------
-  // 전체 시계열 (모든 기간)
-  // -------------------------------
-  Future<List<FlSpot>> _fetchEntireSeries() async {
-    final pairs = await _fetchRawRange(); // 전체
-    pairs.sort((a, b) => a.key.compareTo(b.key));
-    for (final e in pairs.take(5)) {
-      final dt = e.key;
-      debugPrint(
-        '[RAW] date=${dt.toIso8601String()} isUtc=${dt.isUtc} tz=${dt.timeZoneName} off=${dt.timeZoneOffset}',
-      );
-    }
-
-    final spots = <FlSpot>[];
-    for (final e in pairs) {
-      final v = e.value;
-      if (v <= 0) continue; // 0 제외
-      spots.add(FlSpot(e.key.millisecondsSinceEpoch.toDouble(), v.toDouble()));
-    }
-    if (spots.isNotEmpty) {
-      final a = DateTime.fromMillisecondsSinceEpoch(
-        spots.first.x.toInt(),
-        isUtc: true,
-      ).toLocal();
-      final b = DateTime.fromMillisecondsSinceEpoch(
-        spots.last.x.toInt(),
-        isUtc: true,
-      ).toLocal();
-      debugPrint(
-        '[SPOTS] first=${a.toIso8601String()} last=${b.toIso8601String()}',
-      );
-    }
-    return spots;
   }
 
   // -------------------------------
@@ -1146,18 +1102,18 @@ class _RealTimeGraphCardState extends State<RealTimeGraphCard> {
           (d) => _day0(d.date) == _day0(anchorDay),
           orElse: () => SleepData(date: anchorDay, sleep: const []),
         );
-        return StackedBarDailyGraph(data: todayData);
+        return HealthSleepTimelineChart(data: todayData);
       case ToggleRange.week:
-        // 최근 7일
-        return StackedBarWeeklyGraph(
+        return HealthSleepStackedChart(
+          range: ToggleRange.week,
           unit: widget.unit,
           intervalYFunc: widget.intervalYFunc,
           data: convertToDailyChartData(gd.daily, 16),
         );
 
       case ToggleRange.month:
-        // 최근 30일
-        return StackedBarMonthlyGraph(
+        return HealthSleepStackedChart(
+          range: ToggleRange.month,
           unit: widget.unit,
           intervalYFunc: widget.intervalYFunc,
           data: convertToDailyChartData(gd.daily, 4),
@@ -1174,7 +1130,8 @@ class _RealTimeGraphCardState extends State<RealTimeGraphCard> {
             anchor: anchor,
             width: 16,
           );
-          return StackedBarHalfYearlyGraph(
+          return HealthSleepStackedChart(
+            range: ToggleRange.halfYear,
             unit: widget.unit,
             intervalYFunc: widget.intervalYFunc,
             data: data,
@@ -1193,7 +1150,8 @@ class _RealTimeGraphCardState extends State<RealTimeGraphCard> {
             anchor: anchor,
             width: 8,
           );
-          return StackedBarYearlyGraph(
+          return HealthSleepStackedChart(
+            range: ToggleRange.year,
             unit: widget.unit,
             intervalYFunc: widget.intervalYFunc,
             data: data,
@@ -1204,40 +1162,18 @@ class _RealTimeGraphCardState extends State<RealTimeGraphCard> {
   }
 
   Widget renderDotGraph() {
-    switch (widget.selectedRange) {
-      case ToggleRange.day:
-        return DotDailyGraph(
-          unit: widget.unit,
-          intervalYFunc: widget.intervalYFunc,
-          data: _entireData,
-        );
-      case ToggleRange.week:
-        return DotWeeklyGraph(
-          unit: widget.unit,
-          intervalYFunc: widget.intervalYFunc,
-          data: _dotGroups,
-        );
-      case ToggleRange.month:
-        return DotMonthlyGraph(
-          unit: widget.unit,
-          intervalYFunc: widget.intervalYFunc,
-          data: _dotGroups,
-        );
-      case ToggleRange.halfYear:
-        return DotHalfYearlyGraph(
-          unit: widget.unit,
-          intervalYFunc: widget.intervalYFunc,
-          data: _dotGroups,
-          monthBaseStart: _monthBaseStart!,
-        );
-      case ToggleRange.year:
-        return DotYearlyGraph(
-          unit: widget.unit,
-          intervalYFunc: widget.intervalYFunc,
-          data: _dotGroups,
-          monthBaseStart: _monthBaseStart!,
-        );
-    }
+    final spots = _barDataToDotSpots(barData);
+    final useFullDayAxis =
+        widget.selectedRange == ToggleRange.day && barData.isNotEmpty;
+    return HealthAreaLineChart(
+      spots: spots,
+      dataType: widget.dataType,
+      range: widget.selectedRange,
+      unit: widget.unit,
+      minX: useFullDayAxis ? barData.first.x.toDouble() : null,
+      maxX: useFullDayAxis ? barData.last.x.toDouble() : null,
+      referenceLineY: widget.dataType == DataType.Oxygen ? 95.0 : null,
+    );
   }
 
   Future<void> fetchMoreBarData() async {
@@ -1297,11 +1233,11 @@ class _RealTimeGraphCardState extends State<RealTimeGraphCard> {
   /// 바 그래프 데이터를 DotGraph용 FlSpot 리스트로 변환 (인덱스 기반)
   List<FlSpot> _barDataToDotSpots(List<BarChartGroupData> data) {
     return data
+        .where(
+          (g) => g.barRods.isNotEmpty && g.barRods.first.toY > 0,
+        )
         .map(
-          (g) => FlSpot(
-            g.x.toDouble(),
-            g.barRods.isNotEmpty ? g.barRods.first.toY : 0.0,
-          ),
+          (g) => FlSpot(g.x.toDouble(), g.barRods.first.toY),
         )
         .toList();
   }
@@ -1309,21 +1245,14 @@ class _RealTimeGraphCardState extends State<RealTimeGraphCard> {
   Widget renderGraph() {
     switch (widget.barType) {
       case GraphType.dot:
-        return DotGraph(
-          dataType: widget.dataType,
-          selectedRange: widget.selectedRange,
-          data: _barDataToDotSpots(barData),
-          onRequestMoreLeft: widget.selectedRange == ToggleRange.day
-              ? null
-              : fetchMoreBarData,
-          setWindowXLabel: (label) => setState(() => windowXLabel = label),
-          selectedDate: selectedDate,
-        );
+        return renderDotGraph();
       case GraphType.bar:
-        return BarGraph(
-          dataType: widget.dataType,
-          selectedRange: widget.selectedRange,
+        return HealthBarChart(
           data: barData,
+          dataType: widget.dataType,
+          range: widget.selectedRange,
+          unit: widget.unit,
+          showStressZones: widget.dataType == DataType.Stress,
           onRequestMoreLeft: widget.selectedRange == ToggleRange.day
               ? null
               : fetchMoreBarData,
@@ -1518,9 +1447,8 @@ class _RealTimeGraphCardState extends State<RealTimeGraphCard> {
           ),
           SizedBox(height: 16),
           Container(
-            padding: EdgeInsets.only(left: 12),
             width: double.infinity,
-            height: 240,
+            height: HealthChartTheme.chartHeight,
             color: Colors.transparent,
             child: _dbLoading
                 ? const Center(child: CircularProgressIndicator(strokeWidth: 2))

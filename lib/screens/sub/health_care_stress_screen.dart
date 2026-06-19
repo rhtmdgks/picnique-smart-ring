@@ -10,7 +10,7 @@ import 'package:picnique_rosary_healthcare_smartring/screens/layouts/background_
 import 'package:picnique_rosary_healthcare_smartring/util/BLEUtil.dart';
 import 'package:picnique_rosary_healthcare_smartring/util/stress.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/real_time_card.dart';
-import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/real_time_graph_card.dart';
+import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/charts/health_chart_card.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/stress_hrv_messages.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/sub_app_bar.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/db/db_manager.dart';
@@ -41,6 +41,8 @@ class _HealthCareStressScreenState extends State<HealthCareStressScreen> {
 
   late final Future<String> _healthMessageFuture = buildStressHrvMessages();
 
+  int _chartRefreshKey = 0;
+
   @override
   void initState() {
     super.initState();
@@ -61,12 +63,12 @@ class _HealthCareStressScreenState extends State<HealthCareStressScreen> {
     return "$days일 전";
   }
 
-  Future<void> _loadLatestStress() async {
+  Future<void> _loadLatestStress({bool skipSync = false}) async {
     setState(() => _latestLoading = true);
     try {
-      // 1) 최근 7일 스트레스 동기화(오늘은 항상 갱신)
-      // 없으면 주석 처리하고 DB만 읽어도 됨
-      await syncRecent7DaysStressToDb(platform);
+      if (!skipSync) {
+        await syncRecent7DaysStressToDb(platform);
+      }
 
       final db = DbManager.I.heartDB;
 
@@ -98,6 +100,21 @@ class _HealthCareStressScreenState extends State<HealthCareStressScreen> {
     } finally {
       if (mounted) setState(() => _latestLoading = false);
     }
+  }
+
+  Future<void> _onManualMeasureSuccess(Map<dynamic, dynamic> result) async {
+    final value = await persistManualMeasurement(
+      dataType: DataType.Stress,
+      result: result,
+    );
+    if (!mounted || value == null) return;
+    setState(() {
+      _latestStress = value;
+      _latestValueText = value.toString();
+      _latestLabel = '방금 전';
+      _latestLoading = false;
+      _chartRefreshKey++;
+    });
   }
 
   @override
@@ -138,11 +155,13 @@ class _HealthCareStressScreenState extends State<HealthCareStressScreen> {
                     ],
                   ),
                   isButtonExist: true,
+                  onMeasureSuccess: _onManualMeasureSuccess,
                 ),
                 const SizedBox(height: 16),
                 StressHrvMessages(future: _healthMessageFuture),
                 const SizedBox(height: 16),
-                RealTimeGraphCard(
+                HealthChartCard(
+                  key: ValueKey(_chartRefreshKey),
                   unit: unit,
                   selectedRange: _selectedRange,
                   onChanged: (range) => setState(() => _selectedRange = range),

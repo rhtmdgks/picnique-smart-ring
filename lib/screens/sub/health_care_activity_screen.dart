@@ -9,6 +9,9 @@ import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/activity
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/activity/activity_goal_card.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/health_message.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/sub_app_bar.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/ring_live_activity.dart';
+import 'package:picnique_rosary_healthcare_smartring/providers/ring.dart';
+import 'package:provider/provider.dart';
 import 'package:drift/drift.dart' as drift;
 
 class ActivityTotals {
@@ -46,6 +49,7 @@ class _HealthCareActivityScreenState extends State<HealthCareActivityScreen> {
 
   bool _loading = true;
   final platform = const MethodChannel('com.example.picnique_ring/ble');
+  RingLiveActivity? _liveActivity;
 
   late final Future<String> _healthMessageFuture =
       Future.wait([
@@ -62,6 +66,46 @@ class _HealthCareActivityScreenState extends State<HealthCareActivityScreen> {
     _syncThenLoadAll();
   }
 
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final live = context.read<RingLiveActivity>();
+    if (_liveActivity != live) {
+      _liveActivity?.removeListener(_onLiveActivityChanged);
+      _liveActivity = live;
+      _liveActivity?.addListener(_onLiveActivityChanged);
+    }
+  }
+
+  @override
+  void dispose() {
+    _liveActivity?.removeListener(_onLiveActivityChanged);
+    super.dispose();
+  }
+
+  bool _isSelectedToday() => _day0(_selectedDate) == _day0(DateTime.now());
+
+  void _onLiveActivityChanged() {
+    if (!mounted || !_isSelectedToday()) return;
+    final ring = context.read<Ring>();
+    final live = _liveActivity;
+    if (!ring.isConnected || live == null || !live.isTracking) return;
+
+    final today = _day0(DateTime.now());
+    final totals = ActivityTotals(
+      steps: live.steps,
+      calories: live.calories,
+      distanceKm: live.distanceMeters / 1000.0,
+    );
+
+    setState(() {
+      _steps = totals.steps;
+      _calories = totals.calories;
+      _distanceKm = totals.distanceKm;
+      _totalsByDay = {..._totalsByDay, today: totals};
+    });
+  }
+
   DateTime _day0(DateTime d) => DateTime(d.year, d.month, d.day);
 
   Future<void> _syncThenLoadAll() async {
@@ -75,6 +119,7 @@ class _HealthCareActivityScreenState extends State<HealthCareActivityScreen> {
 
       // ✅ 선택일 합계 반영
       _applySelected(_selectedDate);
+      _onLiveActivityChanged();
     } catch (_) {
       if (!mounted) return;
       setState(() {

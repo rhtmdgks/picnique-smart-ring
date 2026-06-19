@@ -7,7 +7,7 @@ import 'package:picnique_rosary_healthcare_smartring/core/enum/toggle_range.dart
 import 'package:picnique_rosary_healthcare_smartring/screens/layouts/background_layout.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/db/db_manager.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/real_time_card.dart';
-import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/real_time_graph_card.dart';
+import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/charts/health_chart_card.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/sub_app_bar.dart';
 import 'package:drift/drift.dart' show OrderingMode, OrderingTerm;
 
@@ -114,7 +114,7 @@ class _CatholicRosaryStatisticsScreenState
                 isButtonExist: false,
               ),
               const SizedBox(height: 16),
-              RealTimeGraphCard(
+              HealthChartCard(
                 unit: unit,
                 selectedRange: _selectedRange,
                 onChanged: (range) => setState(() => _selectedRange = range),

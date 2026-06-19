@@ -7,6 +7,7 @@ import 'package:picnique_rosary_healthcare_smartring/core/constants/fonts.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/activity/healthcare_activity_card.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/healthcare_card.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_background_sync.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/ring_live_activity.dart';
 
 import '../providers/ring.dart';
 
@@ -146,6 +147,16 @@ class _HealthCareScreenState extends State<HealthCareScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final ring = context.watch<Ring>();
+    final live = context.watch<RingLiveActivity>();
+
+    final useLiveSport = ring.isConnected && live.isTracking;
+    final displaySteps = useLiveSport ? live.steps : _walk;
+    final displayCalories = useLiveSport ? live.calories : _calories;
+    final displayDistKm = useLiveSport
+        ? live.distanceMeters / 1000.0
+        : _dist;
+
     final stressScoreText = (_stressScore != null)
         ? _stressScore.toString()
         : '—';
@@ -195,9 +206,9 @@ class _HealthCareScreenState extends State<HealthCareScreen> {
                   child: Column(
                     children: [
                       HealthCareActivityCard(
-                        calories: _calories,
-                        steps: _walk,
-                        distanceKm: _dist,
+                        calories: displayCalories,
+                        steps: displaySteps,
+                        distanceKm: displayDistKm,
                       ),
                       const SizedBox(height: 16),
                       Row(

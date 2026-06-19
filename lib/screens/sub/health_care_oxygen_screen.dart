@@ -11,7 +11,7 @@ import 'package:picnique_rosary_healthcare_smartring/util/BLEUtil.dart';
 import 'package:picnique_rosary_healthcare_smartring/util/TrendUtil.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/health_message.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/real_time_card.dart';
-import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/real_time_graph_card.dart';
+import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/charts/health_chart_card.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/sub_app_bar.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/db/db_manager.dart';
 
@@ -36,6 +36,7 @@ class _HealthCareOxygenScreenState extends State<HealthCareOxygenScreen> {
   String _latestLabel = "-";
   String _latestValueText = "-";
   bool _latestLoading = false;
+  int _chartRefreshKey = 0;
 
   final platform = const MethodChannel('com.example.picnique_ring/ble');
 
@@ -99,6 +100,20 @@ class _HealthCareOxygenScreenState extends State<HealthCareOxygenScreen> {
     }
   }
 
+  Future<void> _onManualMeasureSuccess(Map<dynamic, dynamic> result) async {
+    final value = await persistManualMeasurement(
+      dataType: DataType.Oxygen,
+      result: result,
+    );
+    if (!mounted || value == null) return;
+    setState(() {
+      _latestValueText = value.toString();
+      _latestLabel = '방금 전';
+      _latestLoading = false;
+      _chartRefreshKey++;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return BackgroundLayout(
@@ -137,6 +152,7 @@ class _HealthCareOxygenScreenState extends State<HealthCareOxygenScreen> {
                     ],
                   ),
                   isButtonExist: true,
+                  onMeasureSuccess: _onManualMeasureSuccess,
                 ),
                 const SizedBox(height: 16),
                 FutureBuilder<String>(
@@ -154,7 +170,8 @@ class _HealthCareOxygenScreenState extends State<HealthCareOxygenScreen> {
                   },
                 ),
                 const SizedBox(height: 16),
-                RealTimeGraphCard(
+                HealthChartCard(
+                  key: ValueKey(_chartRefreshKey),
                   unit: unit,
                   selectedRange: _selectedRange,
                   onChanged: (range) => setState(() => _selectedRange = range),

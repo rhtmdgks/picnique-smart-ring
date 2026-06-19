@@ -4,8 +4,13 @@ import 'package:picnique_rosary_healthcare_smartring/core/constants/fonts.dart';
 
 class MainAppBar extends StatelessWidget implements PreferredSizeWidget {
   final String title;
+  final Future<void> Function()? onSignOut;
 
-  const MainAppBar({super.key, required this.title});
+  const MainAppBar({
+    super.key,
+    required this.title,
+    this.onSignOut,
+  });
 
   @override
   Size get preferredSize => const Size.fromHeight(kToolbarHeight);
@@ -35,6 +40,14 @@ class MainAppBar extends StatelessWidget implements PreferredSizeWidget {
             fontVariations: AppFontVariations.semiBold,
           ),
         ),
+        actions: [
+          if (onSignOut != null)
+            IconButton(
+              tooltip: '로그아웃',
+              onPressed: () async => onSignOut?.call(),
+              icon: const Icon(Icons.logout_rounded, color: Colors.white),
+            ),
+        ],
       ),
     );
   }

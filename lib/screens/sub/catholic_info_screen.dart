@@ -56,7 +56,7 @@ class CatholicInfoScreen extends StatelessWidget {
           child: ListView.separated(
             // TODO(task): 카드 개수가 홀수일 때 마지막 단일 카드 레이아웃 처리 로직 추가.
             itemCount: catholicInfos.length ~/ 2,
-            separatorBuilder: (_, __) => SizedBox(height: 12),
+            separatorBuilder: (_, index) => const SizedBox(height: 12),
             itemBuilder: (context, index) {
               final left = catholicInfos[index * 2];
               final right = catholicInfos[index * 2 + 1];

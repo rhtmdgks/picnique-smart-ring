@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'dart:io' show Platform;
 import 'package:picnique_rosary_healthcare_smartring/core/constants/colors.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/constants/fonts.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/ring.dart';
@@ -8,10 +9,18 @@ import 'package:picnique_rosary_healthcare_smartring/widgets/button.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/setting/barrery_status.dart';
 import 'package:provider/provider.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/ring_live_activity.dart';
 import 'package:picnique_rosary_healthcare_smartring/util/BLERealtimeLogger.dart';
 
 class RingStatusCard extends StatelessWidget {
   const RingStatusCard({super.key});
+
+  static const int _maxAddressLength = 16;
+
+  static String _formatAddress(String address) {
+    if (address.length <= _maxAddressLength) return address;
+    return '${address.substring(0, _maxAddressLength)}...';
+  }
 
   // ⚠️ 프로젝트에서 사용 중인 채널 이름으로 교체하세요.
   static const MethodChannel _bleChannel = MethodChannel(
@@ -37,23 +46,25 @@ class RingStatusCard extends StatelessWidget {
     }
 
     try {
-      // 1) FlutterBluePlus 레벨 연결 해제
-      await FlutterBluePlus.stopScan();
-      final targetAddr = ringProvider.address;
-      if (targetAddr != null && targetAddr.isNotEmpty) {
-        final connected = FlutterBluePlus.connectedDevices;
-        for (final d in connected) {
-          final id = deviceAddress(d);
-          if (id == targetAddr) {
-            try {
-              await d.disconnect();
-            } catch (_) {}
-            break;
+      // Android만 FlutterBluePlus 경로 사용. iOS는 네이티브 SDK 단독.
+      if (Platform.isAndroid) {
+        await FlutterBluePlus.stopScan();
+        final targetAddr = ringProvider.address;
+        if (targetAddr != null && targetAddr.isNotEmpty) {
+          final connected = FlutterBluePlus.connectedDevices;
+          for (final d in connected) {
+            final id = deviceAddress(d);
+            if (id == targetAddr) {
+              try {
+                await d.disconnect();
+              } catch (_) {}
+              break;
+            }
           }
         }
       }
 
-      // 2) 네이티브 SDK 연결 해제
+      // 네이티브 SDK 연결 해제
       final ok = await _bleChannel.invokeMethod<bool>('disconnect');
       if (ok != true) {
         debugPrint('Native disconnect returned: $ok');
@@ -64,16 +75,20 @@ class RingStatusCard extends StatelessWidget {
         await _fgChannel.invokeMethod('stopService');
       } catch (_) {}
       try {
+        await context.read<RingLiveActivity>().stop();
+      } catch (_) {}
+      try {
         await BleRealtimeLogger.stop();
       } catch (_) {}
 
       // ✅ Provider 상태 갱신 (프로바이더 메서드명은 프로젝트에 맞게 조정하세요)
       ringProvider.resetRing();
+      await ringProvider.clearPersist();
 
       if (!context.mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('스마트링 연결을 해제했습니다.')));
+      ).showSnackBar(const SnackBar(content: Text('스마트링 연결을 끊었습니다.')));
     } on PlatformException catch (e) {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -91,7 +106,8 @@ class RingStatusCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Consumer2<Ring, UserSetting>(
       builder: (context, ringProvider, userSettingProvider, child) {
-        final isConnected = ringProvider.isConnected;
+        final isConnected =
+            ringProvider.isConnected && (ringProvider.address?.isNotEmpty ?? false);
 
         return Container(
           decoration: BoxDecoration(
@@ -117,32 +133,41 @@ class RingStatusCard extends StatelessWidget {
                   child: Padding(
                     padding: const EdgeInsets.symmetric(vertical: 8),
                     child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text(
-                          ringProvider.name ?? "연결된 스마트링 없음",
-                          style: TextStyle(
-                            color: isConnected
-                                ? AppColors.lightPurple
-                                : AppColors.lightGray,
-                            fontSize: 14,
-                            fontVariations: isConnected
-                                ? AppFontVariations.semiBold
-                                : AppFontVariations.regular,
+                        Expanded(
+                          child: Text(
+                            isConnected
+                                ? (ringProvider.name ?? '연결된 스마트링')
+                                : '연결된 스마트링 없음',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: isConnected
+                                  ? AppColors.lightPurple
+                                  : AppColors.lightGray,
+                              fontSize: 14,
+                              fontVariations: isConnected
+                                  ? AppFontVariations.semiBold
+                                  : AppFontVariations.regular,
+                            ),
                           ),
                         ),
-                        Button(
-                          onTap: isConnected
-                              ? () =>
-                                    _disconnect(context, ringProvider) // ⬅️ 연결
-                              : () {
-                                  Navigator.pushNamed(
-                                    context,
-                                    "/connect-ring-setting",
-                                  );
-                                },
-                          text: isConnected ? "연결해제" : "연결하기",
-                        ),
+                        const SizedBox(width: 8),
+                        if (isConnected)
+                          Button(
+                            onTap: () => _disconnect(context, ringProvider),
+                            text: '연결 끊기',
+                          )
+                        else
+                          Button(
+                            onTap: () {
+                              Navigator.pushNamed(
+                                context,
+                                '/connect-ring-setting',
+                              );
+                            },
+                            text: '연결하기',
+                          ),
                       ],
                     ),
                   ),
@@ -151,16 +176,20 @@ class RingStatusCard extends StatelessWidget {
                     ? Padding(
                         padding: const EdgeInsets.symmetric(vertical: 8),
                         child: Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            Text(
-                              ringProvider.address ?? "",
-                              style: TextStyle(
-                                color: AppColors.lightGray,
-                                fontSize: 12,
-                                fontVariations: AppFontVariations.light,
+                            Expanded(
+                              child: Text(
+                                _formatAddress(ringProvider.address ?? ''),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: AppColors.lightGray,
+                                  fontSize: 12,
+                                  fontVariations: AppFontVariations.light,
+                                ),
                               ),
                             ),
+                            const SizedBox(width: 8),
                             BatteryStatus(battery: ringProvider.battery ?? 30),
                           ],
                         ),

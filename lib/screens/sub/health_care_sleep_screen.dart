@@ -11,7 +11,7 @@ import 'package:picnique_rosary_healthcare_smartring/util/TrendUtil.dart';
 import 'package:picnique_rosary_healthcare_smartring/util/stress.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/health_message.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/real_time_card.dart';
-import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/real_time_graph_card.dart';
+import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/charts/health_chart_card.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/sub_app_bar.dart';
 
 // y축 간격은 간단 고정
@@ -178,7 +178,7 @@ class _HealthCareSleepScreenState extends State<HealthCareSleepScreen> {
                   },
                 ),
                 const SizedBox(height: 16),
-                RealTimeGraphCard(
+                HealthChartCard(
                   unit: "",
                   selectedRange: _selectedRange,
                   onChanged: (range) => setState(() => _selectedRange = range),

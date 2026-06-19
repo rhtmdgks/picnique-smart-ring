@@ -6,12 +6,12 @@ class UserSetting with ChangeNotifier {
   bool get isBluetoothOn => _isBluetoothOn;
   bool get isChargeAlarmOn => _isChargeAlarmOn;
 
-  void setIsBluetoothOn(newIsBluetoothOn) {
+  void setIsBluetoothOn(bool newIsBluetoothOn) {
     _isBluetoothOn = newIsBluetoothOn;
     notifyListeners();
   }
 
-  void setIsChargeAlarmOn(newIsChargeAlarmOn) {
+  void setIsChargeAlarmOn(bool newIsChargeAlarmOn) {
     _isChargeAlarmOn = newIsChargeAlarmOn;
     notifyListeners();
   }

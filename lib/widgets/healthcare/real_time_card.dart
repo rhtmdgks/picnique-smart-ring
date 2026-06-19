@@ -4,6 +4,7 @@ import 'package:flutter_svg/svg.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/constants/colors.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/constants/fonts.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/enum/data_type.dart';
+import 'package:picnique_rosary_healthcare_smartring/util/measurement_error_message.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/button.dart';
 
 class RealTimeDataCard extends StatelessWidget {
@@ -12,6 +13,7 @@ class RealTimeDataCard extends StatelessWidget {
   final bool isButtonExist;
   final Widget? bottomWidget;
   final DataType dataType;
+  final void Function(Map<dynamic, dynamic> result)? onMeasureSuccess;
 
   const RealTimeDataCard({
     super.key,
@@ -21,6 +23,7 @@ class RealTimeDataCard extends StatelessWidget {
     required this.isButtonExist,
     required this.dataType,
     this.bottomWidget,
+    this.onMeasureSuccess,
   });
 
   // 공용 BLE 채널
@@ -97,6 +100,7 @@ class RealTimeDataCard extends StatelessWidget {
               break;
             }
         }
+        onMeasureSuccess?.call(Map<dynamic, dynamic>.from(res));
       }
 
       ScaffoldMessenger.of(
@@ -109,14 +113,22 @@ class RealTimeDataCard extends StatelessWidget {
       if (!context.mounted) return;
       Navigator.of(context, rootNavigator: true).pop();
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('에러: ${e.code} - ${e.message ?? ''}')),
+        SnackBar(
+          content: Text(
+            measurementErrorMessage(e, dataType: dataType),
+          ),
+        ),
       );
     } catch (e) {
       if (!context.mounted) return;
       Navigator.of(context, rootNavigator: true).pop();
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('에러: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            '측정 중 문제가 발생했어요.\n잠시 후 다시 시도해 주세요.',
+          ),
+        ),
+      );
     }
   }
 

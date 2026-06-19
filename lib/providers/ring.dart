@@ -21,27 +21,27 @@ class Ring with ChangeNotifier {
   bool get isConnected => _isConnected;
   String? get accessToken => _accessToken;
 
-  void setName(newName) {
+  void setName(String? newName) {
     _name = newName;
     notifyListeners();
   }
 
-  void setAddress(newAddress) {
+  void setAddress(String? newAddress) {
     _address = newAddress;
     notifyListeners();
   }
 
-  void setBattery(newBattery) {
+  void setBattery(int? newBattery) {
     _battery = newBattery;
     notifyListeners();
   }
 
-  void setIsConnected(newIsConnected) {
+  void setIsConnected(bool newIsConnected) {
     _isConnected = newIsConnected;
     notifyListeners();
   }
 
-  void setAccessToken(newAccessToken) {
+  void setAccessToken(String? newAccessToken) {
     _accessToken = newAccessToken;
     notifyListeners();
   }

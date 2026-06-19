@@ -13,7 +13,7 @@ import 'package:picnique_rosary_healthcare_smartring/util/TrendUtil.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/health_message.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/heart_rate_range_messages.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/real_time_card.dart';
-import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/real_time_graph_card.dart';
+import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/charts/health_chart_card.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/sub_app_bar.dart';
 
 // 추가: DB와 정렬용 drift
@@ -45,6 +45,7 @@ class _HealthCareHeartScreenState extends State<HealthCareHeartScreen> {
   String _latestLabel = "-"; // "5분 전" 등
   String _latestBpmText = "-"; // "84" 등
   bool _latestLoading = false;
+  int _chartRefreshKey = 0;
   final platform = MethodChannel('com.example.picnique_ring/ble');
 
   /// 날짜/범위와 무관하게 한 번만 로드해 유지
@@ -128,6 +129,20 @@ class _HealthCareHeartScreenState extends State<HealthCareHeartScreen> {
     }
   }
 
+  Future<void> _onManualMeasureSuccess(Map<dynamic, dynamic> result) async {
+    final value = await persistManualMeasurement(
+      dataType: DataType.HeartRate,
+      result: result,
+    );
+    if (!mounted || value == null) return;
+    setState(() {
+      _latestBpmText = value.toString();
+      _latestLabel = '방금 전';
+      _latestLoading = false;
+      _chartRefreshKey++;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return BackgroundLayout(
@@ -176,6 +191,7 @@ class _HealthCareHeartScreenState extends State<HealthCareHeartScreen> {
                     ],
                   ),
                   isButtonExist: true,
+                  onMeasureSuccess: _onManualMeasureSuccess,
                 ),
                 const SizedBox(height: 16),
                 FutureBuilder<String>(
@@ -201,7 +217,8 @@ class _HealthCareHeartScreenState extends State<HealthCareHeartScreen> {
                   },
                 ),
                 const SizedBox(height: 16),
-                RealTimeGraphCard(
+                HealthChartCard(
+                  key: ValueKey(_chartRefreshKey),
                   unit: unit,
                   selectedRange: _selectedRange,
                   onChanged: (range) {

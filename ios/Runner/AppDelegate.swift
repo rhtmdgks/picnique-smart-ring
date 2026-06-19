@@ -14,8 +14,11 @@ import UIKit
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
-    if bleBridge == nil {
-      bleBridge = IosBleBridge(messenger: engineBridge.applicationRegistrar.messenger())
+    let messenger = engineBridge.applicationRegistrar.messenger()
+    // BLE bridge defer → first Flutter frame paint before native BT init
+    DispatchQueue.main.async { [weak self] in
+      guard self?.bleBridge == nil else { return }
+      self?.bleBridge = IosBleBridge(messenger: messenger)
     }
   }
 }

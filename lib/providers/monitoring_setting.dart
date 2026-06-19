@@ -15,32 +15,32 @@ class MonitoringSetting with ChangeNotifier {
   bool get isStressOn => _isStressOn;
   bool get isActivityOn => _isActivityOn;
 
-  void setIsStepOn(newIsStepOn) {
+  void setIsStepOn(bool newIsStepOn) {
     _isStepOn = newIsStepOn;
     notifyListeners();
   }
 
-  void setIsSleepOn(newIsSleepOn) {
+  void setIsSleepOn(bool newIsSleepOn) {
     _isSleepOn = newIsSleepOn;
     notifyListeners();
   }
 
-  void setIsHeartRateOn(newIsHeartRateOn) {
+  void setIsHeartRateOn(bool newIsHeartRateOn) {
     _isHeartRateOn = newIsHeartRateOn;
     notifyListeners();
   }
 
-  void setIsBloodOxygenOn(newIsBloodOxygenOn) {
+  void setIsBloodOxygenOn(bool newIsBloodOxygenOn) {
     _isBloodOxygenOn = newIsBloodOxygenOn;
     notifyListeners();
   }
 
-  void setIsStressOn(newIsStressOn) {
+  void setIsStressOn(bool newIsStressOn) {
     _isStressOn = newIsStressOn;
     notifyListeners();
   }
 
-  void setIsActivityOn(newIsActivityOn) {
+  void setIsActivityOn(bool newIsActivityOn) {
     _isActivityOn = newIsActivityOn;
     notifyListeners();
   }
