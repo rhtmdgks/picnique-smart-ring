@@ -107,7 +107,7 @@ class _RangeMessageTile extends StatelessWidget {
               style: TextStyle(
                 color: AppColors.lightPurple,
                 fontSize: 12,
-                fontVariations: AppFontVariations.semiBold,
+                fontWeight: AppFontWeight.semiBold,
               ),
             ),
           ),
@@ -119,7 +119,7 @@ class _RangeMessageTile extends StatelessWidget {
                 color: AppColors.lightGray,
                 fontSize: 13,
                 height: 1.45,
-                fontVariations: AppFontVariations.medium,
+                fontWeight: AppFontWeight.medium,
               ),
             ),
           ),

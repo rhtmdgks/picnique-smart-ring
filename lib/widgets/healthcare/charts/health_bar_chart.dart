@@ -1,6 +1,7 @@
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:picnique_rosary_healthcare_smartring/core/charts/health_chart_formatters.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/charts/health_chart_theme.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/constants/colors.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/enum/data_type.dart';
@@ -59,6 +60,24 @@ class HealthBarChart extends StatelessWidget {
     required this.selectedDate,
   });
 
+  bool get _isHourlyActivityDay =>
+      range == ToggleRange.day &&
+      (dataType == DataType.Kcal ||
+          dataType == DataType.Steps ||
+          dataType == DataType.Distance);
+
+  List<double> get _dayXTicks {
+    if (!_isHourlyActivityDay) {
+      return computeSparseXTicks(
+        minX: 0,
+        maxX: (data.length - 1).toDouble(),
+        range: range,
+        dataType: dataType,
+      );
+    }
+    return const [0, 6, 12, 18, 23];
+  }
+
   @override
   Widget build(BuildContext context) {
     if (data.isEmpty) {
@@ -68,13 +87,21 @@ class HealthBarChart extends StatelessWidget {
       );
     }
 
-    final rods = data.expand((g) => g.barRods).map((r) => r.toY).toList();
+    final rods = data
+        .expand((g) => g.barRods)
+        .where((r) => r.toY > 0)
+        .map((r) => r.toY)
+        .toList();
     final bounds = HealthChartTheme.computeYBounds(
       dataType: dataType,
       values: rods,
       fixedMin: showStressZones ? 0 : null,
       fixedMax: showStressZones ? 100 : null,
     );
+
+    final barWidth = getBarWidth(range, dataType);
+    final xTicks = _dayXTicks;
+    final xInterval = _xTitleInterval(xTicks);
 
     final chart = BarChart(
       BarChartData(
@@ -90,7 +117,10 @@ class HealthBarChart extends StatelessWidget {
                 color: AppColors.lightOrange,
               )
             : null,
-        alignment: BarChartAlignment.spaceAround,
+        alignment: _isHourlyActivityDay
+            ? BarChartAlignment.spaceBetween
+            : BarChartAlignment.spaceAround,
+        groupsSpace: _isHourlyActivityDay ? 6 : 4,
         titlesData: FlTitlesData(
           topTitles: const AxisTitles(
             sideTitles: SideTitles(showTitles: false),
@@ -108,11 +138,19 @@ class HealthBarChart extends StatelessWidget {
             sideTitles: SideTitles(
               showTitles: true,
               reservedSize: HealthChartTheme.bottomAxisSize,
-              getTitlesWidget: (v, _) {
-                final idx = v.toInt();
-                return Text(
-                  _bottomLabel(idx),
-                  style: HealthChartTheme.axisLabelStyle(),
+              interval: range == ToggleRange.day ? xInterval : null,
+              getTitlesWidget: (v, meta) {
+                if (range == ToggleRange.day &&
+                    !isNearChartTick(v, xTicks, tolerance: 0.4)) {
+                  return const SizedBox.shrink();
+                }
+                return SideTitleWidget(
+                  axisSide: meta.axisSide,
+                  space: 4,
+                  child: Text(
+                    _bottomLabel(v.toInt()),
+                    style: HealthChartTheme.axisLabelStyle(),
+                  ),
                 );
               },
             ),
@@ -131,9 +169,12 @@ class HealthBarChart extends StatelessWidget {
             ),
             getTooltipColor: (_) => AppColors.mutePurple,
             getTooltipItem: (group, groupIndex, rod, rodIndex) {
+              if (rod.toY <= 0) return null;
               return HealthChartTooltip.barItem(
                 title: _bottomLabel(group.x.toInt()),
-                value: rod.toY.toStringAsFixed(0),
+                value: rod.toY.toStringAsFixed(
+                  dataType == DataType.Distance ? 2 : 0,
+                ),
                 unit: unit,
               );
             },
@@ -142,19 +183,22 @@ class HealthBarChart extends StatelessWidget {
         barGroups: data.map((g) {
           if (g.barRods.isEmpty) return g;
           final rod = g.barRods.first;
-          final color = dataType == DataType.Stress
-              ? HealthChartTheme.barColorForStress(rod.toY)
-              : (rod.color ?? HealthChartTheme.lineColor(dataType));
+          final isZero = rod.toY <= 0;
+          final color = isZero
+              ? Colors.transparent
+              : dataType == DataType.Stress
+                  ? HealthChartTheme.barColorForStress(rod.toY)
+                  : (rod.color ?? HealthChartTheme.lineColor(dataType));
           return BarChartGroupData(
             x: g.x,
             barRods: [
               BarChartRodData(
-                toY: rod.toY,
+                toY: isZero ? 0 : rod.toY,
                 fromY: rod.fromY,
                 color: color,
-                width: rod.width,
-                borderRadius: const BorderRadius.vertical(
-                  top: Radius.circular(4),
+                width: barWidth,
+                borderRadius: BorderRadius.vertical(
+                  top: Radius.circular(isZero ? 0 : 6),
                 ),
               ),
             ],
@@ -167,23 +211,33 @@ class HealthBarChart extends StatelessWidget {
     return Semantics(
       label: '${dataType.name} bar chart',
       child: SizedBox(
-      height: HealthChartTheme.chartHeight,
-      child: Stack(
-        children: [
-          if (showStressZones)
-            Positioned.fill(
-              child: CustomPaint(painter: StressZonePainter()),
-            ),
-          chart,
-        ],
-      ),
+        height: HealthChartTheme.chartHeight,
+        child: Stack(
+          children: [
+            if (showStressZones)
+              Positioned.fill(
+                child: CustomPaint(painter: StressZonePainter()),
+              ),
+            chart,
+          ],
+        ),
       ),
     );
   }
 
+  double _xTitleInterval(List<double> ticks) {
+    if (ticks.length < 2) return 1;
+    return ticks[1] - ticks[0];
+  }
+
   String _bottomLabel(int xIndex) {
     if (range == ToggleRange.day) {
-      return '${xIndex}h';
+      return formatAxisX(
+        xIndex.toDouble(),
+        range,
+        dataType: dataType,
+        dayAnchor: selectedDate,
+      );
     }
     try {
       final dt = getDateTimeFromIndex(xIndex, range, dataType);

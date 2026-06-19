@@ -22,6 +22,9 @@ dependencies:
   path: ^1.9.1
   collection: ^1.19.1
   shared_preferences: ^2.3.2
+  flutter_local_notifications: ^19.0.0
+  flutter_markdown: ^0.7.7
+  markdown: ^7.3.0
   webview_flutter: ^4.13.0
 
 dev_dependencies:
@@ -36,6 +39,7 @@ flutter:
   assets:
     - assets/icons/
     - assets/images/
+    - assets/legal/
   fonts:
     - family: Paperlogy
       fonts:

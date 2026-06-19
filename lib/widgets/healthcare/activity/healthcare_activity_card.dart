@@ -51,7 +51,7 @@ class HealthCareActivityCard extends StatelessWidget {
                   style: TextStyle(
                     color: Colors.white,
                     fontSize: 18,
-                    fontVariations: AppFontVariations.medium,
+                    fontWeight: AppFontWeight.medium,
                   ),
                 ),
               ],
@@ -69,7 +69,7 @@ class HealthCareActivityCard extends StatelessWidget {
                       style: TextStyle(
                         color: Colors.white,
                         fontSize: 14,
-                        fontVariations: AppFontVariations.medium,
+                        fontWeight: AppFontWeight.medium,
                       ),
                     ),
                     Row(
@@ -82,7 +82,7 @@ class HealthCareActivityCard extends StatelessWidget {
                           style: TextStyle(
                             color: Colors.white,
                             fontSize: 20,
-                            fontVariations: AppFontVariations.bold,
+                            fontWeight: AppFontWeight.bold,
                           ),
                         ),
                         const SizedBox(width: 4),
@@ -91,7 +91,7 @@ class HealthCareActivityCard extends StatelessWidget {
                           style: TextStyle(
                             color: AppColors.lightGray,
                             fontSize: 12,
-                            fontVariations: AppFontVariations.medium,
+                            fontWeight: AppFontWeight.medium,
                           ),
                         ),
                       ],
@@ -107,7 +107,7 @@ class HealthCareActivityCard extends StatelessWidget {
                       style: TextStyle(
                         color: Colors.white,
                         fontSize: 14,
-                        fontVariations: AppFontVariations.medium,
+                        fontWeight: AppFontWeight.medium,
                       ),
                     ),
                     Text(
@@ -115,7 +115,7 @@ class HealthCareActivityCard extends StatelessWidget {
                       style: TextStyle(
                         color: Colors.white,
                         fontSize: 20,
-                        fontVariations: AppFontVariations.bold,
+                        fontWeight: AppFontWeight.bold,
                       ),
                     ),
                   ],
@@ -129,7 +129,7 @@ class HealthCareActivityCard extends StatelessWidget {
                       style: TextStyle(
                         color: Colors.white,
                         fontSize: 14,
-                        fontVariations: AppFontVariations.medium,
+                        fontWeight: AppFontWeight.medium,
                       ),
                     ),
                     Row(
@@ -140,7 +140,7 @@ class HealthCareActivityCard extends StatelessWidget {
                           style: TextStyle(
                             color: Colors.white,
                             fontSize: 20,
-                            fontVariations: AppFontVariations.bold,
+                            fontWeight: AppFontWeight.bold,
                           ),
                         ),
                         const SizedBox(width: 4),
@@ -149,7 +149,7 @@ class HealthCareActivityCard extends StatelessWidget {
                           style: TextStyle(
                             color: AppColors.lightGray,
                             fontSize: 12,
-                            fontVariations: AppFontVariations.medium,
+                            fontWeight: AppFontWeight.medium,
                           ),
                         ),
                       ],

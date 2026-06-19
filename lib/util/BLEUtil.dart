@@ -16,6 +16,7 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:url_launcher/url_launcher.dart'; // pubspec에 추가 필요
 import 'package:picnique_rosary_healthcare_smartring/core/enum/data_type.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/db/db_manager.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/health_live_metrics.dart';
 
 import '../db/app_db.dart';
 
@@ -130,6 +131,75 @@ Future<bool> _ensureBluetoothOnIos(
     await Future<void>.delayed(const Duration(milliseconds: 300));
   }
   return false;
+}
+
+/// UI 없이 블루투스 사용 가능 여부만 확인한다(자동 재연결 등).
+Future<bool> isBluetoothReady({
+  Duration timeout = const Duration(seconds: 8),
+}) async {
+  if (Platform.isIOS) {
+    final deadline = DateTime.now().add(timeout);
+    while (DateTime.now().isBefore(deadline)) {
+      try {
+        final state = await _blePlatformChannel.invokeMethod<String>(
+          'getBluetoothState',
+        );
+        if (state == 'on') return true;
+        if (state == 'off' ||
+            state == 'unauthorized' ||
+            state == 'unsupported') {
+          return false;
+        }
+      } catch (_) {}
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+    }
+    return false;
+  }
+
+  try {
+    final initial = await FlutterBluePlus.adapterState.first;
+    if (initial == BluetoothAdapterState.on) return true;
+    try {
+      await FlutterBluePlus.turnOn();
+    } catch (_) {}
+    await FlutterBluePlus.adapterState
+        .firstWhere((s) => s == BluetoothAdapterState.on)
+        .timeout(timeout);
+    return true;
+  } on TimeoutException {
+    return false;
+  } catch (_) {
+    return false;
+  }
+}
+
+/// 반지 자동 측정(심박·산소·스트레스)을 켠다. 백그라운드 수집 전제.
+Future<void> enableRingAutoMonitoring({
+  MethodChannel platform = _blePlatformChannel,
+}) async {
+  const hrInterval = 30;
+  try {
+    await platform.invokeMethod('writeHrSetting', {
+      'isEnable': true,
+      'interval': hrInterval,
+    });
+  } catch (e) {
+    debugPrint('[ERR] writeHrSetting: $e');
+  }
+  try {
+    await platform.invokeMethod('writeSpo2Setting', {
+      'isEnable': true,
+    });
+  } catch (e) {
+    debugPrint('[ERR] writeSpo2Setting: $e');
+  }
+  try {
+    await platform.invokeMethod('writePressureSetting', {
+      'isEnable': true,
+    });
+  } catch (e) {
+    debugPrint('[ERR] writePressureSetting: $e');
+  }
 }
 
 /// 한 번에: 현재 설정 읽어서 print → 전부 ON 시도 → 결과 재확인 print
@@ -250,14 +320,22 @@ Future<void> printAndEnableAllSettings(MethodChannel platform) async {
 
 Future<void> printBattery(MethodChannel platform, Ring ringProvider) async {
   try {
-    var battery = await platform
-        .invokeMethod("getBatteryLevel")
-        .timeout(Duration(seconds: 10)); // 10초 타임아웃
-    ringProvider.setBattery(battery);
+    final battery = await platform
+        .invokeMethod<dynamic>('getBatteryLevel')
+        .timeout(const Duration(seconds: 10));
+    if (battery is Map) {
+      final level = battery['level'] ?? battery['battery'];
+      final charging = battery['charging'] == true;
+      if (level is num) {
+        ringProvider.setBatteryAndCharging(level.toInt(), charging);
+      }
+    } else if (battery is int) {
+      ringProvider.setBattery(battery);
+    }
   } on TimeoutException {
-    debugPrint("Battery level request timeout");
+    debugPrint('Battery level request timeout');
   } on PlatformException catch (e) {
-    debugPrint("Battery level error: ${e.code} - ${e.message}");
+    debugPrint('Battery level error: ${e.code} - ${e.message}');
   }
 }
 
@@ -959,10 +1037,12 @@ int _asMeasurementInt(dynamic value) {
 Future<int?> persistManualMeasurement({
   required DataType dataType,
   required Map<dynamic, dynamic> result,
+  HealthLiveMetrics? metrics,
 }) async {
   final now = DateTime.now();
   final db = DbManager.I.heartDB;
 
+  int? saved;
   switch (dataType) {
     case DataType.HeartRate:
       final hr = _asMeasurementInt(result['hr'] ?? result['value']);
@@ -970,22 +1050,25 @@ Future<int?> persistManualMeasurement({
       await db.insertHeartDetail(
         HeartDetailsCompanion.insert(date: now, bpm: hr),
       );
-      return hr;
+      saved = hr;
     case DataType.Oxygen:
       final spo2 = _asMeasurementInt(result['spo2'] ?? result['value']);
       if (spo2 <= 0) return null;
       await db.insertSpO2(
         BloodOxygenDetailsCompanion.insert(date: now, spo2: spo2),
       );
-      return spo2;
+      saved = spo2;
     case DataType.Stress:
       final stress = _asMeasurementInt(result['pressure'] ?? result['value']);
       if (stress <= 0) return null;
       await saveManualStressReading(stress);
-      return stress;
+      saved = stress;
     default:
       return null;
   }
+
+  metrics?.record(dataType, saved);
+  return saved;
 }
 
 Future<void> syncRecent7DaysStressToDb(

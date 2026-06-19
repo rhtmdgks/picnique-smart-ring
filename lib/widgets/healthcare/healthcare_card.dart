@@ -27,7 +27,7 @@ class HealthCareCard extends StatelessWidget {
           Navigator.pushNamed(context, path);
         },
         child: Container(
-          padding: EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(16),
             border: Border.all(
@@ -50,21 +50,21 @@ class HealthCareCard extends StatelessWidget {
                 width: 40,
                 height: 40,
                 'assets/icons/$iconSvgPath.svg',
-                colorFilter: ColorFilter.mode(
+                colorFilter: const ColorFilter.mode(
                   AppColors.lightOrange,
                   BlendMode.srcIn,
                 ),
               ),
-              SizedBox(height: 16),
+              const SizedBox(height: 16),
               Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
                     title,
-                    style: TextStyle(
+                    style: const TextStyle(
                       color: Colors.white,
                       fontSize: 18,
-                      fontVariations: AppFontVariations.medium,
+                      fontWeight: AppFontWeight.semiBold,
                     ),
                   ),
                   widget,
@@ -72,22 +72,20 @@ class HealthCareCard extends StatelessWidget {
               ),
               if (isStress > 0) ...[
                 const SizedBox(height: 13),
-
                 LayoutBuilder(
                   builder: (context, constraints) {
                     const double barHeight = 5;
                     const double gap = 4;
-
-                    // 삼각형 스펙
                     const double triW = 9;
                     const double triH = 6;
 
                     final double availableWidth = constraints.maxWidth;
-                    final double segmentWidth = ((availableWidth - gap * 4) / 5)
-                        .clamp(0, availableWidth)
-                        .toDouble();
+                    final double segmentWidth =
+                        ((availableWidth - gap * 4) / 5)
+                            .clamp(0, availableWidth)
+                            .toDouble();
 
-                    final List<Color> colors = [
+                    const List<Color> colors = [
                       AppColors.StressBlue,
                       AppColors.StressGreen,
                       AppColors.StressYellow,
@@ -95,20 +93,14 @@ class HealthCareCard extends StatelessWidget {
                       AppColors.StressRed,
                     ];
 
-                    // ✅ 현재 필드는 bool이므로 극단(1 또는 5)로 매핑
                     final int stressIndex = isStress;
-
-                    // 좌측에서부터의 위치: 2 + (index-1) * (segmentWidth + gap)
                     final double triLeft =
-                        (2 + (stressIndex - 1) * (segmentWidth + gap)).clamp(
-                          0.0,
-                          availableWidth - triW,
-                        );
+                        (2 + (stressIndex - 1) * (segmentWidth + gap))
+                            .clamp(0.0, availableWidth - triW);
 
                     return Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        // ▼ 삼각형 (막대 위에서 2px 위에 위치시키기 위해 여기 배치)
                         SizedBox(
                           width: availableWidth,
                           height: triH,
@@ -120,25 +112,18 @@ class HealthCareCard extends StatelessWidget {
                                 child: CustomPaint(
                                   size: const Size(triW, triH),
                                   painter: _DownTrianglePainter(
-                                    color:
-                                        colors[(stressIndex - 1).clamp(0, 4)],
-                                    radius: 1.0, // "아주살짝 둥근" 정도
+                                    color: colors[(stressIndex - 1).clamp(0, 4)],
                                   ),
                                 ),
                               ),
                             ],
                           ),
                         ),
-
-                        // 삼각형과 막대 사이 간격 2
                         const SizedBox(height: 2),
-
-                        // ▼ 기존 5분할 막대
                         SizedBox(
                           width: availableWidth,
                           height: barHeight,
                           child: Row(
-                            mainAxisAlignment: MainAxisAlignment.start,
                             children: [
                               for (int i = 0; i < 5; i++) ...[
                                 Container(
@@ -158,7 +143,6 @@ class HealthCareCard extends StatelessWidget {
                     );
                   },
                 ),
-
                 const SizedBox(height: 8),
               ],
             ],
@@ -171,9 +155,9 @@ class HealthCareCard extends StatelessWidget {
 
 class _DownTrianglePainter extends CustomPainter {
   final Color color;
-  final double radius; // 모서리 아주 살짝 라운딩
+  final double radius;
 
-  _DownTrianglePainter({required this.color, this.radius = 1.0});
+  _DownTrianglePainter({required this.color, this.radius = 1.5});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -186,27 +170,22 @@ class _DownTrianglePainter extends CustomPainter {
     final h = size.height;
     final r = radius.clamp(0.0, 2.0);
 
-    // 아래쪽을 향하는 이등변 삼각형 (윗변 좌우 + 아랫쪽 꼭짓점)
-    // 모서리를 '아주살짝' 둥글게 만들기 위해 arc를 조금 섞습니다.
     final path = Path()
-      ..moveTo(r, 0) // 좌상단 약간 오른쪽
-      ..lineTo(w - r, 0) // 우상단 약간 왼쪽
+      ..moveTo(r, 0)
+      ..lineTo(w - r, 0)
       ..arcToPoint(
-        // 우상단 모서리 라운딩
         Offset(w - r * 0.5, r * 0.3),
         radius: Radius.circular(r),
         clockwise: true,
       )
-      ..lineTo(w / 2 + r * 0.4, h - r) // 아래 꼭짓점 근처
+      ..lineTo(w / 2 + r * 0.4, h - r)
       ..arcToPoint(
-        // 아래 꼭짓점 라운딩
         Offset(w / 2 - r * 0.4, h - r),
         radius: Radius.circular(r),
         clockwise: true,
       )
-      ..lineTo(r * 0.5, r * 0.3) // 좌상단 근처
+      ..lineTo(r * 0.5, r * 0.3)
       ..arcToPoint(
-        // 좌상단 모서리 라운딩
         Offset(r, 0),
         radius: Radius.circular(r),
         clockwise: true,
@@ -217,7 +196,6 @@ class _DownTrianglePainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _DownTrianglePainter oldDelegate) {
-    return oldDelegate.color != color || oldDelegate.radius != radius;
-  }
+  bool shouldRepaint(covariant _DownTrianglePainter oldDelegate) =>
+      oldDelegate.color != color || oldDelegate.radius != radius;
 }

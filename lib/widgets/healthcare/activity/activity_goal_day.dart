@@ -60,9 +60,9 @@ class ActivityGoalDay extends StatelessWidget {
         ? Colors.white
         : (isToday ? Colors.white : AppColors.lightGray);
 
-    final textVarTop = isSelected
-        ? AppFontVariations.semiBold
-        : (isToday ? AppFontVariations.medium : AppFontVariations.regular);
+    final fontWeightTop = isSelected
+        ? AppFontWeight.semiBold
+        : (isToday ? AppFontWeight.medium : AppFontWeight.regular);
 
     final double caloriePct = _safePct(calories, calorieGoal);
     final double stepsPct = _safePct(steps, stepGoal);
@@ -89,7 +89,7 @@ class ActivityGoalDay extends StatelessWidget {
                 style: TextStyle(
                   color: textColorTop,
                   fontSize: 14,
-                  fontVariations: textVarTop,
+                  fontWeight: fontWeightTop,
                 ),
               ),
             ),
@@ -116,7 +116,7 @@ class ActivityGoalDay extends StatelessWidget {
                     style: TextStyle(
                       color: textColorTop,
                       fontSize: 14,
-                      fontVariations: textVarTop,
+                      fontWeight: fontWeightTop,
                     ),
                   ),
                 ),

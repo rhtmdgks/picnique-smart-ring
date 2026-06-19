@@ -145,7 +145,7 @@ class HealthSleepTimelineChart extends StatelessWidget {
                         TextStyle(
                           color: Colors.white,
                           fontSize: 12,
-                          fontVariations: AppFontVariations.medium,
+                          fontWeight: AppFontWeight.medium,
                         ),
                       );
                     }).toList();
@@ -195,7 +195,7 @@ class _SleepLegend extends StatelessWidget {
               style: TextStyle(
                 color: AppColors.lightGray,
                 fontSize: 11,
-                fontVariations: AppFontVariations.regular,
+                fontWeight: AppFontWeight.regular,
               ),
             ),
           ],

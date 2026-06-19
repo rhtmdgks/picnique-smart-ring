@@ -97,7 +97,7 @@ class _CatholicRosaryStatisticsScreenState
                       style: TextStyle(
                         color: Colors.white,
                         fontSize: 20,
-                        fontVariations: AppFontVariations.regular,
+                        fontWeight: AppFontWeight.semiBold,
                       ),
                     ),
                     SizedBox(width: 4),
@@ -106,7 +106,7 @@ class _CatholicRosaryStatisticsScreenState
                       style: TextStyle(
                         color: AppColors.lightGray,
                         fontSize: 16,
-                        fontVariations: AppFontVariations.regular,
+                        fontWeight: AppFontWeight.regular,
                       ),
                     ),
                   ],

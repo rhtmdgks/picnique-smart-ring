@@ -1,7 +1,10 @@
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:picnique_rosary_healthcare_smartring/core/charts/health_chart_formatters.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/charts/health_chart_models.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/charts/health_chart_theme.dart';
+import 'package:picnique_rosary_healthcare_smartring/core/enum/data_type.dart';
+import 'package:picnique_rosary_healthcare_smartring/core/enum/toggle_range.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/enum/data_type.dart';
 
 void main() {
@@ -51,6 +54,28 @@ void main() {
       expect(segments.length, 2);
       expect(segments[0].length, 2);
       expect(segments[1].length, 1);
+    });
+
+    test('day axis uses hour labels not epoch ms', () {
+      final anchor = DateTime(2026, 6, 19);
+      final label = formatAxisX(
+        72,
+        ToggleRange.day,
+        dataType: DataType.HeartRate,
+        dayAnchor: anchor,
+      );
+      expect(label, '6');
+    });
+
+    test('sparse day ticks every 6 hours', () {
+      final ticks = computeSparseXTicks(
+        minX: 0,
+        maxX: 288,
+        range: ToggleRange.day,
+        dataType: DataType.HeartRate,
+      );
+      expect(ticks.length, lessThanOrEqualTo(6));
+      expect(ticks.first, 0);
     });
   });
 }

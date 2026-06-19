@@ -26,7 +26,7 @@ TextSpan renderTooltipLabel(double x, UnitX unitX, DateTime? monthBaseStart) {
         style: TextStyle(
           color: AppColors.lightGray,
           fontSize: 12,
-          fontVariations: AppFontVariations.medium,
+          fontWeight: AppFontWeight.medium,
         ),
       );
     case UnitX.hour:
@@ -39,7 +39,7 @@ TextSpan renderTooltipLabel(double x, UnitX unitX, DateTime? monthBaseStart) {
         style: TextStyle(
           color: AppColors.lightGray,
           fontSize: 12,
-          fontVariations: AppFontVariations.medium,
+          fontWeight: AppFontWeight.medium,
         ),
       );
     case UnitX.day:
@@ -53,7 +53,7 @@ TextSpan renderTooltipLabel(double x, UnitX unitX, DateTime? monthBaseStart) {
         style: TextStyle(
           color: AppColors.lightGray,
           fontSize: 12,
-          fontVariations: AppFontVariations.medium,
+          fontWeight: AppFontWeight.medium,
         ),
       );
     case UnitX.month:
@@ -64,7 +64,7 @@ TextSpan renderTooltipLabel(double x, UnitX unitX, DateTime? monthBaseStart) {
         style: TextStyle(
           color: AppColors.lightGray,
           fontSize: 12,
-          fontVariations: AppFontVariations.medium,
+          fontWeight: AppFontWeight.medium,
         ),
       );
   }
@@ -90,7 +90,7 @@ TextSpan renderBarTooltipLabel(
         style: TextStyle(
           color: AppColors.lightGray,
           fontSize: 12,
-          fontVariations: AppFontVariations.medium,
+          fontWeight: AppFontWeight.medium,
         ),
       );
     case UnitX.month:
@@ -100,7 +100,7 @@ TextSpan renderBarTooltipLabel(
         style: TextStyle(
           color: AppColors.lightGray,
           fontSize: 12,
-          fontVariations: AppFontVariations.medium,
+          fontWeight: AppFontWeight.medium,
         ),
       );
 
@@ -111,7 +111,7 @@ TextSpan renderBarTooltipLabel(
         style: TextStyle(
           color: AppColors.lightGray,
           fontSize: 12,
-          fontVariations: AppFontVariations.medium,
+          fontWeight: AppFontWeight.medium,
         ),
       );
   }
@@ -821,15 +821,15 @@ double getBarWidth(ToggleRange range, DataType dataType) {
       switch (dataType) {
         case DataType.Rosary:
         case DataType.Stress:
-          return 2;
+          return 6;
         case DataType.HeartRate:
         case DataType.Oxygen:
         case DataType.Sleep:
-          return 8;
+          return 6;
         case DataType.Kcal:
         case DataType.Distance:
         case DataType.Steps:
-          return 4;
+          return 14;
       }
 
     case ToggleRange.week:

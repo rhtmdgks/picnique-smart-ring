@@ -128,7 +128,7 @@ class _HealthCareSleepScreenState extends State<HealthCareSleepScreen> {
                         style: TextStyle(
                           color: Colors.white,
                           fontSize: 20,
-                          fontVariations: AppFontVariations.regular,
+                          fontWeight: AppFontWeight.semiBold,
                         ),
                       ),
                       SizedBox(width: 4),
@@ -137,7 +137,7 @@ class _HealthCareSleepScreenState extends State<HealthCareSleepScreen> {
                         style: TextStyle(
                           color: AppColors.lightGray,
                           fontSize: 16,
-                          fontVariations: AppFontVariations.regular,
+                          fontWeight: AppFontWeight.regular,
                         ),
                       ),
                       SizedBox(width: 8),
@@ -146,7 +146,7 @@ class _HealthCareSleepScreenState extends State<HealthCareSleepScreen> {
                         style: TextStyle(
                           color: Colors.white,
                           fontSize: 20,
-                          fontVariations: AppFontVariations.regular,
+                          fontWeight: AppFontWeight.semiBold,
                         ),
                       ),
                       SizedBox(width: 4),
@@ -155,7 +155,7 @@ class _HealthCareSleepScreenState extends State<HealthCareSleepScreen> {
                         style: TextStyle(
                           color: AppColors.lightGray,
                           fontSize: 16,
-                          fontVariations: AppFontVariations.regular,
+                          fontWeight: AppFontWeight.regular,
                         ),
                       ),
                     ],

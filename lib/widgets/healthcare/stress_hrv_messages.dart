@@ -92,7 +92,7 @@ class _StressMessageTile extends StatelessWidget {
               style: TextStyle(
                 color: AppColors.lightPurple,
                 fontSize: 12,
-                fontVariations: AppFontVariations.semiBold,
+                fontWeight: AppFontWeight.semiBold,
               ),
             ),
           ),
@@ -104,7 +104,7 @@ class _StressMessageTile extends StatelessWidget {
                 color: AppColors.lightGray,
                 fontSize: 13,
                 height: 1.45,
-                fontVariations: AppFontVariations.medium,
+                fontWeight: AppFontWeight.medium,
               ),
             ),
           ),

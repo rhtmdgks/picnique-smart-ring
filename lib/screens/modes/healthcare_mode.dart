@@ -7,7 +7,9 @@ import 'package:picnique_rosary_healthcare_smartring/screens/health_care_screen.
 import 'package:picnique_rosary_healthcare_smartring/screens/modes/mode_shell_screen.dart';
 import 'package:picnique_rosary_healthcare_smartring/screens/setting_screen.dart';
 import 'package:picnique_rosary_healthcare_smartring/screens/sub/catholic_info_screen.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/health_live_metrics.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_live_activity.dart';
+import 'package:picnique_rosary_healthcare_smartring/util/BLEUtil.dart';
 import 'package:provider/provider.dart';
 
 class HealthcareModeScreen extends StatelessWidget {
@@ -70,19 +72,56 @@ class HealthcareModeScreen extends StatelessWidget {
   }
 }
 
-class _HealthcareFigmaHome extends StatelessWidget {
+class _HealthcareFigmaHome extends StatefulWidget {
   const _HealthcareFigmaHome();
+
+  @override
+  State<_HealthcareFigmaHome> createState() => _HealthcareFigmaHomeState();
+}
+
+class _HealthcareFigmaHomeState extends State<_HealthcareFigmaHome> {
+  int? _heartRate;
+  int? _spo2;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadVitals();
+  }
+
+  Future<void> _loadVitals() async {
+    final results = await Future.wait([
+      BleRepository.getLatestHeartRate(),
+      BleRepository.getLatestSpO2(),
+    ]);
+    if (!mounted) return;
+    final hr = results[0];
+    final sp = results[1];
+    setState(() {
+      _heartRate = hr;
+      _spo2 = sp;
+    });
+    context.read<HealthLiveMetrics>().hydrate(heartRate: hr, spo2: sp);
+  }
 
   @override
   Widget build(BuildContext context) {
     final ring = context.watch<Ring>();
     final live = context.watch<RingLiveActivity>();
+    final metrics = context.watch<HealthLiveMetrics>();
     final useLive = ring.isConnected && live.isTracking;
     final steps = useLive ? live.steps : 0;
-    const hr = '—';
-    const spo2 = '—';
-    final status = 'normal';
-    final battery = ring.battery?.toString() ?? '—';
+    final heartRate = metrics.heartRate ?? _heartRate;
+    final spo2 = metrics.spo2 ?? _spo2;
+    final hr = heartRate?.toString() ?? '—';
+    final spo2Text = spo2?.toString() ?? '—';
+    final status = ring.isReconnecting && !ring.isConnected
+        ? 'caution'
+        : (!ring.isConnected && ring.hasSavedDevice ? 'disconnected' : 'normal');
+    final batteryPct = ring.battery;
+    final battery = ring.isCharging && batteryPct != null
+        ? '충전 $batteryPct'
+        : (batteryPct?.toString() ?? '—');
     final alerts = '0';
     final dateLabel = _todayKoreanLabel();
     final progress = (steps / HealthGoal.dailyStepGoal).clamp(0.0, 1.0);
@@ -127,7 +166,7 @@ class _HealthcareFigmaHome extends StatelessWidget {
                 width: (MediaQuery.of(context).size.width - 16 * 2 - 10) / 2,
                 child: _metricCard(
                   title: '산소포화도',
-                  value: spo2,
+                  value: spo2Text,
                   suffix: '%',
                   icon: Icons.bloodtype_rounded,
                   tone: const Color(0xFF4A4FA2),
@@ -139,7 +178,9 @@ class _HealthcareFigmaHome extends StatelessWidget {
                   title: '배터리',
                   value: battery,
                   suffix: '%',
-                  icon: Icons.battery_charging_full_rounded,
+                  icon: ring.isCharging
+                      ? Icons.battery_charging_full_rounded
+                      : Icons.battery_5_bar_rounded,
                   tone: const Color(0xFF2C8A66),
                 ),
               ),
@@ -414,7 +455,7 @@ class _HealthcareFigmaHome extends StatelessWidget {
       case 'danger':
         return '컨디션 점검';
       case 'caution':
-        return '리듬 주의';
+        return '재연결 중';
       case 'disconnected':
         return '연결 확인';
       default:

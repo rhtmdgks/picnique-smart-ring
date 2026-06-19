@@ -41,7 +41,7 @@ class SettingRowAtomic extends StatelessWidget {
                   title,
                   style: TextStyle(
                     fontSize: 14,
-                    fontVariations: AppFontVariations.semiBold,
+                    fontWeight: AppFontWeight.semiBold,
                     color: Colors.white,
                   ),
                 ),

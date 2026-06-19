@@ -9,7 +9,6 @@ class Button extends StatelessWidget {
   const Button({super.key, required this.onTap, required this.text});
 
   @override
-  @override
   Widget build(BuildContext context) {
     return ElevatedButton(
       onPressed: onTap,
@@ -27,7 +26,7 @@ class Button extends StatelessWidget {
         text,
         style: const TextStyle(
           fontSize: 14,
-          fontVariations: AppFontVariations.medium,
+          fontWeight: AppFontWeight.semiBold,
         ),
       ),
     );

@@ -1,13 +1,27 @@
-import 'dart:ui';
+import 'package:flutter/material.dart';
 
-class AppFontVariations {
-  static const thin = <FontVariation>[FontVariation('wght', 100.0)];
-  static const extraLight = <FontVariation>[FontVariation('wght', 200.0)];
-  static const light = <FontVariation>[FontVariation('wght', 300.0)];
-  static const regular = <FontVariation>[FontVariation('wght', 400.0)];
-  static const medium = <FontVariation>[FontVariation('wght', 500.0)];
-  static const semiBold = <FontVariation>[FontVariation('wght', 600.0)];
-  static const bold = <FontVariation>[FontVariation('wght', 700.0)];
-  static const extraBold = <FontVariation>[FontVariation('wght', 800.0)];
-  static const black = <FontVariation>[FontVariation('wght', 900.0)];
+/// Paperlogy static weights (pubspec.yaml). Use [fontWeight], not fontVariations.
+abstract final class AppFontWeight {
+  static const thin = FontWeight.w100;
+  static const extraLight = FontWeight.w200;
+  static const light = FontWeight.w300;
+  static const regular = FontWeight.w400;
+  static const medium = FontWeight.w500;
+  static const semiBold = FontWeight.w600;
+  static const bold = FontWeight.w700;
+  static const extraBold = FontWeight.w800;
+  static const black = FontWeight.w900;
+}
+
+@Deprecated('Use AppFontWeight with fontWeight')
+abstract final class AppFontVariations {
+  static const thin = AppFontWeight.thin;
+  static const extraLight = AppFontWeight.extraLight;
+  static const light = AppFontWeight.light;
+  static const regular = AppFontWeight.regular;
+  static const medium = AppFontWeight.medium;
+  static const semiBold = AppFontWeight.semiBold;
+  static const bold = AppFontWeight.bold;
+  static const extraBold = AppFontWeight.extraBold;
+  static const black = AppFontWeight.black;
 }

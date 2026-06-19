@@ -122,6 +122,7 @@ class EventEmitter : EventChannel.StreamHandler {
     fun sendRingTouch(count: Int, hex: String) {
         sink?.success(
             mapOf(
+                "type" to "ringTouch",
                 "count" to count,
                 "hex" to hex,
             )
@@ -192,6 +193,10 @@ class BleBridge(private val appContext: Context) {
     }
 
     fun connectDirectly(deviceAddress: String?, result: MethodChannel.Result) {
+        reconnectKnownDevice(deviceAddress, result)
+    }
+
+    fun reconnectKnownDevice(deviceAddress: String?, result: MethodChannel.Result) {
         if (deviceAddress.isNullOrBlank()) {
             result.error("BAD_ARGS", "deviceAddress is required", null)
             return
@@ -199,6 +204,13 @@ class BleBridge(private val appContext: Context) {
         try {
             val app = (appContext.applicationContext as Application)
             BleOperateManager.getInstance(app).connectDirectly(deviceAddress)
+            emitter.emit(
+                mapOf(
+                    "type" to "connected",
+                    "address" to deviceAddress,
+                    "name" to ""
+                )
+            )
             result.success(true)
         } catch (t: Throwable) {
             result.error("CONNECT_FAIL", t.message, null)
@@ -209,6 +221,13 @@ class BleBridge(private val appContext: Context) {
         try {
             val app = (appContext.applicationContext as Application)
             BleOperateManager.getInstance(app).disconnect()
+            emitter.emit(
+                mapOf(
+                    "type" to "disconnected",
+                    "address" to null,
+                    "error" to ""
+                )
+            )
             result.success(true)
         } catch (t: Throwable) {
             result.error("DISCONNECT_FAIL", t.message, null)
@@ -406,22 +425,24 @@ class BleBridge(private val appContext: Context) {
                             val charging = BLEDataFormatUtils.bytes2Int(
                                 byteArrayOf(load[2])
                             )
+                            val battery = BLEDataFormatUtils.bytes2Int(
+                                byteArrayOf(load[1])
+                            )
                             if (charging > 0) {
                                 emitter.emit(
                                     mapOf(
                                         "type"   to "rtCharging",
                                         "isCharging" to true,
+                                        "percent" to battery,
                                         "rawHex" to hex
                                     )
                                 )
                             } else {
-                                val battery = BLEDataFormatUtils.bytes2Int(
-                                    byteArrayOf(load[1])
-                                )
                                 emitter.emit(
                                     mapOf(
                                         "type"    to "rtBattery",
                                         "percent" to battery,
+                                        "isCharging" to false,
                                         "rawHex"  to hex
                                     )
                                 )
@@ -1269,6 +1290,8 @@ class BleBridge(private val appContext: Context) {
         val main = android.os.Handler(android.os.Looper.getMainLooper())
         val replied = java.util.concurrent.atomic.AtomicBoolean(false)
         val TIMEOUT_MS = 45_000L
+        val MIN_MEASURE_MS = 10_000L
+        val startedAt = System.currentTimeMillis()
 
         fun u8(x: Any?): Int = when (x) {
             is Byte  -> x.toInt() and 0xFF
@@ -1336,18 +1359,24 @@ class BleBridge(private val appContext: Context) {
                             return finishErr("SPO2_MANUAL_DEVICE_ERR", "Device errCode=$errCode")
                         }
 
-                        // 3) 최종 프레임 판단
-                        //    - 보통 type==3 이 최종 SpO2
-                        //    - 일부 펌웨어는 type 미노출 → status==1 또는 값 유효성으로 판단
-                        val isFinal = when {
-                            status >= 0 -> status == 1
-                            else        -> spo2 > 0
+                        // 3) 최종 프레임 판단 — status=0(진행) 무시, 캐시값 즉시 반환 방지
+                        when (status) {
+                            0 -> return
+                            1 -> { /* completed */ }
+                            else -> {
+                                if (System.currentTimeMillis() - startedAt < MIN_MEASURE_MS) {
+                                    return
+                                }
+                            }
                         }
-                        if (!isFinal) return
-
-                        // 값 유효성(0~100). 범위를 벗어나면 에러 처리
                         if (spo2 <= 0 || spo2 > 100) {
-                            return finishErr("SPO2_MANUAL_RANGE", "out-of-range spo2=$spo2")
+                            if (status == 1) {
+                                return finishErr(
+                                    "SPO2_MANUAL_RANGE",
+                                    "out-of-range spo2=$spo2"
+                                )
+                            }
+                            return
                         }
 
                         return finishOk(
@@ -1771,25 +1800,20 @@ class BleBridge(private val appContext: Context) {
 
 
     fun enableSimpleTouchLogging(result: MethodChannel.Result) {
-        if (simpleTouchLoggingEnabled) {
-            // 이미 켜져 있으면 다시 등록 안 함
-            result.success(true)
-            return
-        }
-
         try {
-            // 1) TouchControl을 "카메라 모드(appType=5)"로 설정 (터치 모드=true, 민감도=5)
+            // 참고 앱(picnique_ring)과 동일: appType=3(묵주/赞念), strength=1
+            // 매번 TouchControl 재전송 (이전 세션/실시간 알림 후 모드가 풀릴 수 있음)
             CommandHandle.getInstance().executeReqCmdNoCallback(
                 TouchControlReq.getWriteInstance(
-                    3,      // appType: 5 = camera
-                    true,   // touch 모드 사용
-                    1       // strength(민감도) 1~10 아무 값
+                    3,      // MSL praise / 묵주
+                    true,   // touch ON
+                    1       // sensitivity
                 )
             )
 
-            QcRawReceiver.touchCount = 0;
-
+            QcRawReceiver.touchCount = 0
             simpleTouchLoggingEnabled = true
+            Log.i(TAG, "enableSimpleTouchLogging: appType=3 strength=1")
             result.success(true)
         } catch (t: Throwable) {
             Log.e(TAG, "enableSimpleTouchLogging failed", t)
@@ -1809,8 +1833,8 @@ class BleBridge(private val appContext: Context) {
             CommandHandle.getInstance().executeReqCmdNoCallback(
                 TouchControlReq.getWriteInstance(
                     0,      // appType: 0 = normal
-                    true,   // touch 모드 사용 안 함
-                    1        // strength(민감도) 무시
+                    false,  // touch 모드 OFF
+                    1
                 )
             )
 

@@ -2,9 +2,80 @@ import Foundation
 import CoreBluetooth
 import Flutter
 import QCBandSDK
+import BackgroundTasks
+import UserNotifications
+
+// MARK: - Background prefs & pending queue
+
+enum IosPendingHealthQueue {
+  private static let fileName = "ring_pending_health.jsonl"
+
+  private static var fileURL: URL {
+    let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+    return dir.appendingPathComponent(fileName)
+  }
+
+  static func append(_ record: [String: Any]) {
+    guard let data = try? JSONSerialization.data(withJSONObject: record),
+          let line = String(data: data, encoding: .utf8) else { return }
+    let url = fileURL
+    if FileManager.default.fileExists(atPath: url.path),
+       let handle = try? FileHandle(forWritingTo: url) {
+      handle.seekToEndOfFile()
+      if let bytes = (line + "\n").data(using: .utf8) {
+        handle.write(bytes)
+      }
+      try? handle.close()
+    } else {
+      try? (line + "\n").write(to: url, atomically: true, encoding: .utf8)
+    }
+  }
+
+  static func readAll() -> [[String: Any]] {
+    let url = fileURL
+    guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+    var rows: [[String: Any]] = []
+    for line in text.split(separator: "\n") {
+      guard let data = line.data(using: .utf8),
+            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        continue
+      }
+      rows.append(obj)
+    }
+    return rows
+  }
+
+  static func clear() {
+    try? FileManager.default.removeItem(at: fileURL)
+  }
+}
+
+enum IosRingBackgroundPrefs {
+  private static let enabledKey = "ring_keepalive_enabled"
+  private static let addressKey = "ring_keepalive_address"
+  private static let nameKey = "ring_keepalive_name"
+
+  static func setKeepalive(enabled: Bool, address: String?, name: String?) {
+    let d = UserDefaults.standard
+    d.set(enabled, forKey: enabledKey)
+    if enabled, let address, !address.isEmpty {
+      d.set(address, forKey: addressKey)
+      d.set(name ?? "", forKey: nameKey)
+    } else {
+      d.removeObject(forKey: addressKey)
+      d.removeObject(forKey: nameKey)
+    }
+  }
+
+  static var isEnabled: Bool { UserDefaults.standard.bool(forKey: enabledKey) }
+  static var address: String? { UserDefaults.standard.string(forKey: addressKey) }
+}
 
 // iOS counterpart of android BleBridge focused on scan/connect + touch counter.
 final class IosBleBridge: NSObject {
+  static let bgTaskId = "kr.picnique.smartring.ring-sync"
+  private static let centralRestoreId = "kr.picnique.smartring.central"
+
   private enum ScanState {
     case idle, scanning
   }
@@ -12,10 +83,15 @@ final class IosBleBridge: NSObject {
   private let methodChannelName = "com.example.picnique_ring/ble"
   private let eventChannelName = "com.example.picnique_ring/ble_events"
   private let fgChannelName = "com.example.picnique_ring/foreground_service_channel"
+  private let bgChannelName = "com.example.picnique_ring/background_keepalive"
+  private let chargingLiveActivityChannelName =
+    "com.example.picnique_ring/charging_live_activity"
 
   private var methodChannel: FlutterMethodChannel!
   private var eventChannel: FlutterEventChannel!
   private var fgChannel: FlutterMethodChannel!
+  private var bgChannel: FlutterMethodChannel!
+  private var chargingLiveActivityChannel: FlutterMethodChannel!
 
   private var eventSink: FlutterEventSink?
 
@@ -23,7 +99,11 @@ final class IosBleBridge: NSObject {
 
   private var central: CBCentralManager {
     if let c = _central { return c }
-    let c = CBCentralManager(delegate: self, queue: nil)
+    let c = CBCentralManager(
+      delegate: self,
+      queue: nil,
+      options: [CBCentralManagerOptionRestoreIdentifierKey: Self.centralRestoreId]
+    )
     _central = c
     return c
   }
@@ -38,7 +118,10 @@ final class IosBleBridge: NSObject {
 
   private var touchCount: Int = 0
   private var touchObserver: NSObjectProtocol?
+  private var touchLoggingActive = false
   private var realtimeStepHooked = false
+  private var realtimeBatteryHooked = false
+  private var lastLowBatteryNotified: Int?
   private let mainQueue = DispatchQueue.main
 
   init(messenger: FlutterBinaryMessenger) {
@@ -52,6 +135,31 @@ final class IosBleBridge: NSObject {
 
     fgChannel = FlutterMethodChannel(name: fgChannelName, binaryMessenger: messenger)
     fgChannel.setMethodCallHandler(handleForeground)
+
+    bgChannel = FlutterMethodChannel(name: bgChannelName, binaryMessenger: messenger)
+    bgChannel.setMethodCallHandler(handleBackgroundKeepalive)
+
+    chargingLiveActivityChannel = FlutterMethodChannel(
+      name: chargingLiveActivityChannelName,
+      binaryMessenger: messenger
+    )
+    chargingLiveActivityChannel.setMethodCallHandler(handleChargingLiveActivity)
+  }
+
+  private func handleChargingLiveActivity(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+    guard call.method == "syncChargingActivity" else {
+      result(FlutterMethodNotImplemented)
+      return
+    }
+    let args = call.arguments as? [String: Any]
+    let isCharging = args?["isCharging"] as? Bool ?? false
+    let battery = args?["battery"] as? Int ?? 0
+    if #available(iOS 16.2, *) {
+      RingChargingLiveActivityManager.sync(isCharging: isCharging, battery: battery)
+      result(true)
+    } else {
+      result(false)
+    }
   }
 
   // MARK: - Handlers
@@ -68,6 +176,9 @@ final class IosBleBridge: NSObject {
     case "connectDirectly":
       let addr = (call.arguments as? [String: Any])?["deviceAddress"] as? String
       connectDirectly(deviceAddress: addr, result: result)
+    case "reconnectKnownDevice":
+      let addr = (call.arguments as? [String: Any])?["deviceAddress"] as? String
+      reconnectKnownDevice(deviceAddress: addr, result: result)
     case "disconnect":
       disconnect(result: result)
     case "getRingTouchCount":
@@ -180,13 +291,151 @@ final class IosBleBridge: NSObject {
   }
 
   private func handleForeground(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
-    // iOS에는 별도 포그라운드 서비스가 없으므로 성공만 반환
     switch call.method {
-    case "startService", "stopService":
+    case "startService":
+      Self.scheduleBackgroundSync()
+      result(true)
+    case "stopService":
       result(true)
     default:
       result(FlutterMethodNotImplemented)
     }
+  }
+
+  private func handleBackgroundKeepalive(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+    switch call.method {
+    case "startBackgroundKeepalive":
+      let args = call.arguments as? [String: Any]
+      let address = args?["address"] as? String
+      let name = args?["name"] as? String
+      IosRingBackgroundPrefs.setKeepalive(enabled: true, address: address, name: name)
+      Self.scheduleBackgroundSync()
+      result(true)
+    case "stopBackgroundKeepalive":
+      IosRingBackgroundPrefs.setKeepalive(enabled: false, address: nil, name: nil)
+      result(true)
+    case "fetchPendingHealthRecords":
+      result(IosPendingHealthQueue.readAll())
+    case "clearPendingHealthRecords":
+      IosPendingHealthQueue.clear()
+      result(true)
+    default:
+      result(FlutterMethodNotImplemented)
+    }
+  }
+
+  static func scheduleBackgroundSync() {
+    guard IosRingBackgroundPrefs.isEnabled else { return }
+    let request = BGAppRefreshTaskRequest(identifier: bgTaskId)
+    request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
+    try? BGTaskScheduler.shared.submit(request)
+  }
+
+  func performBackgroundHealthSync(completion: @escaping (Bool) -> Void) {
+    guard IosRingBackgroundPrefs.isEnabled,
+          let address = IosRingBackgroundPrefs.address,
+          let uuid = UUID(uuidString: address) else {
+      completion(false)
+      return
+    }
+
+    let reconnect: () -> Void = { [weak self] in
+      guard let self = self else {
+        completion(false)
+        return
+      }
+      self.collectPendingSamples {
+        completion(true)
+      }
+    }
+
+    if connected != nil {
+      reconnect()
+      return
+    }
+
+    if let cached = peripherals[uuid] {
+      connected = cached
+      cached.delegate = self
+      central.connect(cached, options: nil)
+      DispatchQueue.main.asyncAfter(deadline: .now() + 8) { reconnect() }
+      return
+    }
+    if let retrieved = central.retrievePeripherals(withIdentifiers: [uuid]).first {
+      peripherals[uuid] = retrieved
+      connected = retrieved
+      retrieved.delegate = self
+      central.connect(retrieved, options: nil)
+      DispatchQueue.main.asyncAfter(deadline: .now() + 8) { reconnect() }
+      return
+    }
+    completion(false)
+  }
+
+  private func maybeNotifyLowBattery(_ battery: Int) {
+    let enabled = UserDefaults.standard.bool(forKey: "flutter.battery_low_alert_enabled")
+    guard enabled else { return }
+
+    if battery > 20 {
+      if battery >= 25 { lastLowBatteryNotified = nil }
+      return
+    }
+    if let last = lastLowBatteryNotified, battery >= last { return }
+
+    let content = UNMutableNotificationContent()
+    content.title = "스마트링 배터리 부족"
+    content.body = "배터리가 \(battery)%입니다. 충전해 주세요."
+    content.sound = .default
+
+    let request = UNNotificationRequest(
+      identifier: "battery_low_alert",
+      content: content,
+      trigger: nil
+    )
+    UNUserNotificationCenter.current().add(request)
+    lastLowBatteryNotified = battery
+  }
+
+  private func collectPendingSamples(done: @escaping () -> Void) {
+    let iso = ISO8601DateFormatter()
+    let collectedAt = iso.string(from: Date())
+    let startOfDay = Calendar.current.startOfDay(for: Date())
+    var pending = 2
+    let finish: () -> Void = {
+      pending -= 1
+      if pending <= 0 { done() }
+    }
+
+    QCSDKCmdCreator.readBatterySuccess({ [weak self] battery, _ in
+      let level = Int(battery)
+      IosPendingHealthQueue.append([
+        "type": "battery",
+        "date": collectedAt,
+        "battery": level,
+      ])
+      self?.maybeNotifyLowBattery(level)
+      finish()
+    }, failed: {
+      finish()
+    })
+
+    QCSDKCmdCreator.getSchedualHeartRateData(with: [startOfDay], success: { models in
+      if let model = models.first {
+        let heartRates = model.heartRates.map { $0.intValue }
+        let interval = max(Int(model.secondInterval), 300)
+        for (i, bpm) in heartRates.enumerated() where bpm > 0 {
+          let sampleDate = startOfDay.addingTimeInterval(TimeInterval(i * interval))
+          IosPendingHealthQueue.append([
+            "type": "heart_sample",
+            "date": iso.string(from: sampleDate),
+            "bpm": bpm,
+          ])
+        }
+      }
+      finish()
+    }, fail: {
+      finish()
+    })
   }
 
   private func bluetoothStateString() -> String {
@@ -234,34 +483,42 @@ final class IosBleBridge: NSObject {
 
   // MARK: - Connect
   private func connectDirectly(deviceAddress: String?, result: @escaping FlutterResult) {
+    reconnectKnownDevice(deviceAddress: deviceAddress, result: result)
+  }
+
+  private func reconnectKnownDevice(deviceAddress: String?, result: @escaping FlutterResult) {
     guard let addr = deviceAddress, let uuid = UUID(uuidString: addr) else {
       result(FlutterError(code: "BAD_ARGS", message: "deviceAddress(uuidString) required", details: nil))
       return
     }
 
-    let peripheral: CBPeripheral
-    if let cached = peripherals[uuid] {
-      peripheral = cached
-    } else if let retrieved = central.retrievePeripherals(withIdentifiers: [uuid]).first {
-      peripheral = retrieved
-      peripherals[uuid] = retrieved
-    } else {
+    guard central.state == .poweredOn else {
+      result(FlutterError(code: "BT_OFF", message: "Bluetooth not powered on", details: nil))
+      return
+    }
+
+    guard let peripheral = resolveKnownPeripheral(uuid: uuid) else {
       result(FlutterError(code: "NOT_FOUND", message: "Peripheral not found for \(addr)", details: nil))
       return
     }
 
-    // 스캔 중 연결 시 CoreBluetooth/SDK 충돌 방지
     if scanState == .scanning {
       central.stopScan()
       scanState = .idle
     }
 
+    peripherals[uuid] = peripheral
     connected = peripheral
     peripheral.delegate = self
+
+    if peripheral.state == .connected {
+      attachConnectedPeripheral(peripheral, result: result)
+      return
+    }
+
     pendingConnect = result
     central.connect(peripheral, options: nil)
 
-    // 연결 콜백이 끝내 오지 않는 경우를 대비한 워치독(60s)
     connectTimeoutWork?.cancel()
     let work = DispatchWorkItem { [weak self] in
       guard let self = self else { return }
@@ -276,6 +533,37 @@ final class IosBleBridge: NSObject {
     DispatchQueue.main.asyncAfter(deadline: .now() + 60, execute: work)
   }
 
+  private func resolveKnownPeripheral(uuid: UUID) -> CBPeripheral? {
+    if let cached = peripherals[uuid] {
+      return cached
+    }
+
+    let serviceUUIDs = [QCBANDSDKSERVERUUID1, QCBANDSDKSERVERUUID2]
+      .compactMap { CBUUID(string: $0) }
+    let connectedPeripherals = central.retrieveConnectedPeripherals(withServices: serviceUUIDs)
+    if let alreadyConnected = connectedPeripherals.first(where: { $0.identifier == uuid }) {
+      return alreadyConnected
+    }
+
+    return central.retrievePeripherals(withIdentifiers: [uuid]).first
+  }
+
+  private func attachConnectedPeripheral(_ peripheral: CBPeripheral, result: @escaping FlutterResult) {
+    QCSDKManager.shareInstance().add(peripheral) { [weak self] ok in
+      guard let self = self else { return }
+      if ok {
+        self.emit([
+          "type": "connected",
+          "address": peripheral.identifier.uuidString,
+          "name": peripheral.name ?? ""
+        ])
+        result(true)
+      } else {
+        result(FlutterError(code: "SDK_ATTACH_FAIL", message: "failed to attach peripheral", details: nil))
+      }
+    }
+  }
+
   private func disconnect(result: @escaping FlutterResult) {
     guard let p = connected else {
       result(true)
@@ -287,8 +575,11 @@ final class IosBleBridge: NSObject {
 
   // MARK: - BLE command mappings
   private func getBatteryLevel(result: @escaping FlutterResult) {
-    QCSDKCmdCreator.readBatterySuccess({ battery, _ in
-      result(Int(battery))
+    QCSDKCmdCreator.readBatterySuccess({ battery, charging in
+      result([
+        "level": Int(battery),
+        "charging": charging
+      ])
     }, failed: {
       result(FlutterError(code: "BATTERY_FAIL", message: "readBattery failed", details: nil))
     })
@@ -296,18 +587,28 @@ final class IosBleBridge: NSObject {
 
   private func enableSimpleTouchLogging(result: @escaping FlutterResult) {
     touchCount = 0
+    touchLoggingActive = true
+
+    let manager = QCSDKManager.shareInstance()
+    _ = OdmBandNotifyCenter.registerNotify()
+
     if touchObserver == nil {
-      _ = OdmBandNotifyCenter.registerNotify()
       touchObserver = NotificationCenter.default.addObserver(
         forName: .OdmBandTakePicture,
         object: nil,
         queue: .main
       ) { [weak self] _ in
-        self?.touchCount += 1
+        self?.recordRingTouch()
       }
     }
 
-    let touchType = QCTouchGestureControlType(rawValue: 3) ?? QCTouchGestureControlType(rawValue: 0)!
+    manager.takePicture = { [weak self] in
+      self?.recordRingTouch()
+    }
+
+    // 참고 앱(picnique_ring)과 동일: type=3(赞念/묵주), strength=1
+    let touchType = QCTouchGestureControlType(rawValue: 3)
+      ?? QCTouchGestureControlType(rawValue: 0)!
     QCSDKCmdCreator.setTouch(touchType, strength: 1, finshed: { error in
       if let err = error {
         result(FlutterError(code: "TOUCH_LOG_FAIL", message: err.localizedDescription, details: nil))
@@ -318,11 +619,16 @@ final class IosBleBridge: NSObject {
   }
 
   private func disableSimpleTouchLogging(result: @escaping FlutterResult) {
+    touchLoggingActive = false
+    QCSDKManager.shareInstance().takePicture = { }
+
     if let obs = touchObserver {
       NotificationCenter.default.removeObserver(obs)
       touchObserver = nil
     }
-    let offType = QCTouchGestureControlType(rawValue: 0) ?? QCTouchGestureControlType(rawValue: 0)!
+
+    let offType = QCTouchGestureControlType(rawValue: 0)
+      ?? QCTouchGestureControlType(rawValue: 0)!
     QCSDKCmdCreator.setTouch(offType, strength: 1, finshed: { error in
       if let err = error {
         result(FlutterError(code: "TOUCH_LOG_FAIL", message: err.localizedDescription, details: nil))
@@ -330,6 +636,15 @@ final class IosBleBridge: NSObject {
         result(true)
       }
     })
+  }
+
+  private func recordRingTouch() {
+    guard touchLoggingActive else { return }
+    touchCount += 1
+    emit([
+      "type": "ringTouch",
+      "count": touchCount,
+    ])
   }
 
   private func readHardwareRevision(result: @escaping FlutterResult) {
@@ -702,13 +1017,35 @@ final class IosBleBridge: NSObject {
         ])
       }
     }
+    manager.currentBatteryInfo = { [weak self] battery, charging in
+      guard let self = self else { return }
+      self.mainQueue.async {
+        if charging {
+          self.emit([
+            "type": "rtCharging",
+            "isCharging": true,
+            "percent": battery
+          ])
+        } else {
+          self.emit([
+            "type": "rtBattery",
+            "isCharging": false,
+            "percent": battery
+          ])
+        }
+      }
+    }
     realtimeStepHooked = true
+    realtimeBatteryHooked = true
     result(true)
   }
 
   private func disableRealtimeNotifications(result: @escaping FlutterResult) {
-    QCSDKManager.shareInstance().currentStepInfo = { _, _, _ in }
+    let manager = QCSDKManager.shareInstance()
+    manager.currentStepInfo = { _, _, _ in }
+    manager.currentBatteryInfo = { _, _ in }
     realtimeStepHooked = false
+    realtimeBatteryHooked = false
     result(true)
   }
 
@@ -879,35 +1216,67 @@ final class IosBleBridge: NSObject {
 
   private func syncManualBloodOxygen(result: @escaping FlutterResult) {
     let manager = QCSDKManager.shareInstance()
-    let timeout = DispatchWorkItem {
-      manager.boMeasuring = { _ in }
-      manager.measuringFail = { }
-      result(FlutterError(code: "SPO2_MANUAL_TIMEOUT", message: "manual SpO2 timeout", details: nil))
-    }
-    mainQueue.asyncAfter(deadline: .now() + .seconds(45), execute: timeout)
+    var replied = false
+    var latestValue = 0
 
-    manager.boMeasuring = { so2 in
-      timeout.cancel()
-      manager.boMeasuring = { _ in }
-      manager.measuringFail = { }
+    func extractSpO2(_ value: Any?) -> Int {
+      if let n = value as? NSNumber { return n.intValue }
+      if let i = value as? Int { return i }
+      if let d = value as? Double { return Int(d.rounded()) }
+      if let f = value as? Float { return Int(f.rounded()) }
+      if let dict = value as? [AnyHashable: Any] {
+        for key in ["spo2", "so2", "soa2", "value", "bloodOxygen"] {
+          if let n = dict[key] as? NSNumber { return n.intValue }
+          if let i = dict[key] as? Int { return i }
+        }
+      }
+      return 0
+    }
+
+    func finishOk(_ value: Int) {
+      guard !replied else { return }
+      replied = true
       result([
-        "spo2": Int(so2),
-        "value": Int(so2)
+        "spo2": value,
+        "value": value
       ])
     }
-    manager.measuringFail = {
-      timeout.cancel()
-      manager.boMeasuring = { _ in }
-      manager.measuringFail = { }
-      result(FlutterError(code: "SPO2_MANUAL_FAIL", message: "manual SpO2 failed", details: nil))
+
+    func finishErr(_ code: String, _ message: String) {
+      guard !replied else { return }
+      replied = true
+      result(FlutterError(code: code, message: message, details: nil))
     }
 
-    QCSDKCmdCreator.startBloodOxygenMeasuring(success: nil, fail: {
-      timeout.cancel()
-      manager.boMeasuring = { _ in }
-      manager.measuringFail = { }
-      result(FlutterError(code: "SPO2_MANUAL_FAIL", message: "start SpO2 measuring failed", details: nil))
-    })
+    // boMeasuring 1회 콜백은 이전 캐시값을 즉시 반환할 수 있음 → 완료 핸들러 API 사용
+    manager.startToMeasuring(
+      withOperateType: .bloodOxygen,
+      timeout: 45,
+      measuringHandle: { measuringResult in
+        let v = extractSpO2(measuringResult)
+        if v > 0 && v <= 100 { latestValue = v }
+      },
+      completedHandle: { isSuccess, finalResult, error in
+        let finalValue = extractSpO2(finalResult)
+        if finalValue > 0 && finalValue <= 100 {
+          finishOk(finalValue)
+          return
+        }
+        if latestValue > 0 {
+          finishOk(latestValue)
+          return
+        }
+        if let err = error {
+          finishErr("SPO2_MANUAL_FAIL", err.localizedDescription)
+          return
+        }
+        if !isSuccess {
+          finishErr("SPO2_MANUAL_FAIL", "SpO2 measurement failed")
+          return
+        }
+        finishErr("SPO2_MANUAL_EMPTY", "no SpO2 data")
+      }
+    )
   }
 
   private func syncPressure(offset: Int, result: @escaping FlutterResult) {
@@ -1253,7 +1622,18 @@ extension IosBleBridge: FlutterStreamHandler {
 // MARK: - CBCentralManagerDelegate
 extension IosBleBridge: CBCentralManagerDelegate {
   func centralManagerDidUpdateState(_ central: CBCentralManager) {
-    // No-op; UI에서 Bluetooth 상태를 따로 묻지는 않음
+  }
+
+  func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
+    if let restored = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] {
+      for peripheral in restored {
+        peripherals[peripheral.identifier] = peripheral
+        if peripheral.state == .connected {
+          connected = peripheral
+          peripheral.delegate = self
+        }
+      }
+    }
   }
 
   func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral,
@@ -1287,6 +1667,13 @@ extension IosBleBridge: CBCentralManagerDelegate {
   }
 
   private func finishPendingConnect() {
+    if let peripheral = connected {
+      emit([
+        "type": "connected",
+        "address": peripheral.identifier.uuidString,
+        "name": peripheral.name ?? ""
+      ])
+    }
     pendingConnect?(true)
     pendingConnect = nil
   }

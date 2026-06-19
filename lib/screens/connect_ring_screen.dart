@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'dart:io' show Platform;
+import 'package:picnique_rosary_healthcare_smartring/services/ring_connection_service.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_live_activity.dart';
 import 'package:picnique_rosary_healthcare_smartring/util/BLERealtimeLogger.dart';
 import 'package:provider/provider.dart';
@@ -244,132 +245,42 @@ class _ConnectRingSettingScreenState extends State<ConnectRingSettingScreen> {
       debugPrint('[CONNECT] start for $address');
       await _stopScanOnly();
 
-      // 표시용 이름: 스캔/캐시 목록에서 조회
       final found = _connectList.firstWhere(
         (e) => e['address'] == address,
         orElse: () => const <String, String>{},
       );
       final deviceName = (found['name']?.isNotEmpty ?? false)
           ? found['name']!
-          : '(이름 없음)';
+          : (ring.name?.trim().isNotEmpty ?? false)
+              ? ring.name!
+              : '(이름 없음)';
 
       if (mounted) {
         setState(() => _connectingDeviceName = deviceName);
       }
-      debugPrint('[CONNECT] connectDirectly begin');
-      await _platform
-          .invokeMethod("connectDirectly", <String, dynamic>{
-            "deviceAddress": address,
-          })
-          .timeout(const Duration(seconds: 60));
-      debugPrint('[CONNECT] connectDirectly done');
 
-      // iOS QCBand SDK: setTime 이후에야 배터리/동기화 명령이 안정적으로 동작한다.
-      await _syncTimeAfterConnect();
-
-      // 네이티브 연결이 성립된 직후 UI 상태를 반영한다.
-      // 배터리 응답 대기 실패만으로 연결 상태를 되돌리지 않는다.
-      ring.setIsConnected(true);
-      ring.setName(deviceName);
-      ring.setAddress(address);
-      await ring.persist();
-
-      final ready = await _waitDeviceReady();
-      if (!ready) {
-        debugPrint('[CONNECT] device ready check failed, keeping connection');
-      }
-
-      // Phase A(경량): 배터리만 즉시 조회
-      if (!mounted) return;
-      await printBattery(_platform, ring);
-
-      // 실시간 알림 + 포그라운드 서비스 시작. 끊김 이벤트는 여기서 감지.
-      debugPrint('[CONNECT] realtime start');
-      await context.read<RingLiveActivity>().start(
-        onDisconnected: () {
-          ring.setIsConnected(false);
-        },
-      );
-      try {
-        const fgChannel = MethodChannel(
-          'com.example.picnique_ring/foreground_service_channel',
-        );
-        await fgChannel.invokeMethod('startService');
-      } catch (_) {}
-      debugPrint('[CONNECT] done');
-
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('연결되었습니다: ${ring.name ?? "(알 수 없음)"}')),
+      final ok = await RingConnectionService.connect(
+        address: address,
+        deviceName: deviceName,
+        ring: ring,
+        liveActivity: context.read<RingLiveActivity>(),
+        sync: sync,
       );
 
-      // 설정 화면으로 돌아가 연결해제 버튼이 바로 보이도록 한다.
-      Navigator.of(context).pop();
-
-      // Phase B(백그라운드): 최근 데이터 동기화는 UI를 막지 않고 진행.
-      // iOS: 네이티브 QCBandSDK와 FlutterBluePlus 이중 스택 충돌·파싱 크래시 회피
-      if (!Platform.isIOS) {
-        unawaited(sync.run(_platform));
-      } else {
-        debugPrint('[CONNECT] skip post-connect auto sync on iOS');
-      }
-    } on TimeoutException {
-      debugPrint('[CONNECT] timeout at outer block');
-      if (mounted) {
+      if (!mounted) return;
+      if (ok) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('연결이 시간 초과되었습니다. 다시 시도해 주세요.')),
+          SnackBar(content: Text('연결되었습니다: ${ring.name ?? "(알 수 없음)"}')),
+        );
+        Navigator.of(context).pop();
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('연결에 실패했습니다. 다시 시도해 주세요.')),
         );
       }
-      try {
-        await _platform.invokeMethod('disconnect');
-      } catch (_) {}
-      ring.resetRing();
-      await ring.clearPersist();
-    } catch (e) {
-      debugPrint('[CONNECT] error: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('연결 실패: $e')));
-      }
-      try {
-        await _platform.invokeMethod('disconnect');
-      } catch (_) {}
-      ring.resetRing();
-      await ring.clearPersist();
     } finally {
       _setConnecting(false);
     }
-  }
-
-  Future<void> _syncTimeAfterConnect() async {
-    try {
-      await _platform
-          .invokeMethod('syncTimeAndGetCoreFeatures')
-          .timeout(const Duration(seconds: 15));
-      debugPrint('[CONNECT] syncTime done');
-    } catch (e) {
-      debugPrint('[CONNECT] syncTime failed (non-fatal): $e');
-    }
-  }
-
-  /// 연결 직후 디바이스가 실제로 명령에 응답하는지 확인한다.
-  /// Android는 connectDirectly가 즉시 반환하므로(준비 전), 배터리 조회로 준비 완료를 판단.
-  /// iOS는 didConnect 이후 반환되므로 대부분 첫 시도에 성공한다.
-  Future<bool> _waitDeviceReady() async {
-    const attempts = 12;
-    for (var i = 0; i < attempts; i++) {
-      try {
-        final battery = await _platform
-            .invokeMethod('getBatteryLevel')
-            .timeout(const Duration(seconds: 3));
-        if (battery != null) return true;
-      } catch (_) {
-        // 아직 준비 안 됨 → 재시도
-      }
-      await Future.delayed(const Duration(milliseconds: 700));
-    }
-    return false;
   }
 
   void _setConnecting(bool value, {String? deviceName}) {

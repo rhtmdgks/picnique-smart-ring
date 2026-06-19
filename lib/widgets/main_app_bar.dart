@@ -37,7 +37,7 @@ class MainAppBar extends StatelessWidget implements PreferredSizeWidget {
           style: TextStyle(
             color: Colors.white,
             fontSize: 24,
-            fontVariations: AppFontVariations.semiBold,
+            fontWeight: AppFontWeight.bold,
           ),
         ),
         actions: [

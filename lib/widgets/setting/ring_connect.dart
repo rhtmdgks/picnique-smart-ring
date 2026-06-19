@@ -54,7 +54,7 @@ class RingConnect extends StatelessWidget {
                     style: TextStyle(
                       color: Colors.white,
                       fontSize: 14,
-                      fontVariations: AppFontVariations.semiBold,
+                      fontWeight: AppFontWeight.semiBold,
                     ),
                   ),
                   const SizedBox(height: 4),
@@ -63,7 +63,7 @@ class RingConnect extends StatelessWidget {
                     style: TextStyle(
                       color: AppColors.lightGray,
                       fontSize: 12,
-                      fontVariations: AppFontVariations.light,
+                      fontWeight: AppFontWeight.light,
                     ),
                   ),
                 ],

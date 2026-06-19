@@ -128,7 +128,7 @@ class CatholicInfoCard extends StatelessWidget {
                       style: TextStyle(
                         color: Colors.white,
                         fontSize: 16,
-                        fontVariations: AppFontVariations.bold,
+                        fontWeight: AppFontWeight.bold,
                       ),
                     ),
                     Icon(

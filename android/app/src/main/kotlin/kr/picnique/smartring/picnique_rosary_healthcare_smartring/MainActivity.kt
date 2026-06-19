@@ -27,6 +27,7 @@ class MainActivity : FlutterActivity() {
         const val EVENT_CHANNEL = "com.example.picnique_ring/ble_events"
 
         const val FOREGROUND_CHANNEL = "com.example.picnique_ring/foreground_service_channel"
+        const val BACKGROUND_CHANNEL = "com.example.picnique_ring/background_keepalive"
     }
 
     private lateinit var bridge: BleBridge
@@ -65,6 +66,10 @@ class MainActivity : FlutterActivity() {
                     )
                     "stopScan" -> bridge.stopScan(result)
                     "connectDirectly" -> bridge.connectDirectly(
+                        deviceAddress = call.argument<String>("deviceAddress"),
+                        result = result
+                    )
+                    "reconnectKnownDevice" -> bridge.reconnectKnownDevice(
                         deviceAddress = call.argument<String>("deviceAddress"),
                         result = result
                     )
@@ -191,6 +196,38 @@ class MainActivity : FlutterActivity() {
                     "stopService" -> {
                         val intent = Intent(this, MyForegroundService::class.java)
                         stopService(intent)
+                        result.success(true)
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, BACKGROUND_CHANNEL)
+            .setMethodCallHandler { call: MethodCall, result: MethodChannel.Result ->
+                when (call.method) {
+                    "startBackgroundKeepalive" -> {
+                        val address = call.argument<String>("address")
+                        val name = call.argument<String>("name")
+                        RingBackgroundPrefs.setKeepalive(this, true, address, name)
+                        val intent = Intent(this, MyForegroundService::class.java)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            startForegroundService(intent)
+                        } else {
+                            startService(intent)
+                        }
+                        result.success(true)
+                    }
+                    "stopBackgroundKeepalive" -> {
+                        RingBackgroundPrefs.setKeepalive(this, false, null, null)
+                        val intent = Intent(this, MyForegroundService::class.java)
+                        stopService(intent)
+                        result.success(true)
+                    }
+                    "fetchPendingHealthRecords" -> {
+                        result.success(PendingHealthQueue.readAll(this))
+                    }
+                    "clearPendingHealthRecords" -> {
+                        PendingHealthQueue.clear(this)
                         result.success(true)
                     }
                     else -> result.notImplemented()

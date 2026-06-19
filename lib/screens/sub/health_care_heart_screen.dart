@@ -14,6 +14,8 @@ import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/health_m
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/heart_rate_range_messages.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/real_time_card.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/charts/health_chart_card.dart';
+import 'package:provider/provider.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/health_live_metrics.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/sub_app_bar.dart';
 
 // 추가: DB와 정렬용 drift
@@ -133,6 +135,7 @@ class _HealthCareHeartScreenState extends State<HealthCareHeartScreen> {
     final value = await persistManualMeasurement(
       dataType: DataType.HeartRate,
       result: result,
+      metrics: context.read<HealthLiveMetrics>(),
     );
     if (!mounted || value == null) return;
     setState(() {
@@ -176,7 +179,7 @@ class _HealthCareHeartScreenState extends State<HealthCareHeartScreen> {
                         style: TextStyle(
                           color: Colors.white,
                           fontSize: 20,
-                          fontVariations: AppFontVariations.regular,
+                          fontWeight: AppFontWeight.semiBold,
                         ),
                       ),
                       SizedBox(width: 4),
@@ -185,7 +188,7 @@ class _HealthCareHeartScreenState extends State<HealthCareHeartScreen> {
                         style: TextStyle(
                           color: AppColors.lightGray,
                           fontSize: 16,
-                          fontVariations: AppFontVariations.regular,
+                          fontWeight: AppFontWeight.regular,
                         ),
                       ),
                     ],

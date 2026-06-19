@@ -31,6 +31,19 @@ class RealTimeDataCard extends StatelessWidget {
     'com.example.picnique_ring/ble',
   );
 
+  static String _measuringDialogMessage(DataType dataType) {
+    switch (dataType) {
+      case DataType.Oxygen:
+        return '산소포화도 측정 중…\n약 20~40초 걸려요.\n손가락을 움직이지 마세요.';
+      case DataType.HeartRate:
+        return '심박수 측정 중…\n약 10~30초 걸려요.\n손가락을 움직이지 마세요.';
+      case DataType.Stress:
+        return '스트레스 측정 중…\n약 20~40초 걸려요.\n손가락을 움직이지 마세요.';
+      default:
+        return '측정 중…';
+    }
+  }
+
   Future<void> _handleMeasure(BuildContext context) async {
     HapticFeedback.lightImpact();
 
@@ -58,7 +71,33 @@ class RealTimeDataCard extends StatelessWidget {
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (_) => const Center(child: CircularProgressIndicator()),
+      builder: (_) => Center(
+        child: Container(
+          margin: const EdgeInsets.symmetric(horizontal: 32),
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+          decoration: BoxDecoration(
+            color: const Color(0xFF2A2038),
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const CircularProgressIndicator(),
+              const SizedBox(height: 16),
+              Text(
+                _measuringDialogMessage(dataType),
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 14,
+                  height: 1.45,
+                  fontWeight: AppFontWeight.regular,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
 
     String okMsg = '측정 완료';
@@ -168,7 +207,7 @@ class RealTimeDataCard extends StatelessWidget {
                         style: TextStyle(
                           color: Colors.white,
                           fontSize: 14,
-                          fontVariations: AppFontVariations.semiBold,
+                          fontWeight: AppFontWeight.semiBold,
                         ),
                       ),
                       const SizedBox(width: 8),
@@ -177,7 +216,7 @@ class RealTimeDataCard extends StatelessWidget {
                         style: const TextStyle(
                           color: AppColors.lightGray,
                           fontSize: 12,
-                          fontVariations: AppFontVariations.regular,
+                          fontWeight: AppFontWeight.regular,
                         ),
                       ),
                     ],

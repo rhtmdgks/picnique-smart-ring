@@ -1,12 +1,14 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:picnique_rosary_healthcare_smartring/util/BLEUtil.dart';
+import 'package:picnique_rosary_healthcare_smartring/util/stress.dart';
 import 'package:provider/provider.dart'; // deviceAddress를 Provider에서 가져오는 경우
 import 'package:picnique_rosary_healthcare_smartring/core/constants/colors.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/constants/fonts.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/activity/healthcare_activity_card.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/healthcare_card.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_background_sync.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/health_live_metrics.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_live_activity.dart';
 
 import '../providers/ring.dart';
@@ -137,6 +139,14 @@ class _HealthCareScreenState extends State<HealthCareScreen> {
         _walk = walk;
         _dist = distKm;
       });
+
+      if (mounted) {
+        context.read<HealthLiveMetrics>().hydrate(
+          heartRate: hr,
+          spo2: sp,
+          stress: stress,
+        );
+      }
     } catch (e) {
       setState(() {
         _error = '데이터 조회 중 오류가 발생했습니다: $e';
@@ -149,6 +159,7 @@ class _HealthCareScreenState extends State<HealthCareScreen> {
   Widget build(BuildContext context) {
     final ring = context.watch<Ring>();
     final live = context.watch<RingLiveActivity>();
+    final metrics = context.watch<HealthLiveMetrics>();
 
     final useLiveSport = ring.isConnected && live.isTracking;
     final displaySteps = useLiveSport ? live.steps : _walk;
@@ -157,16 +168,22 @@ class _HealthCareScreenState extends State<HealthCareScreen> {
         ? live.distanceMeters / 1000.0
         : _dist;
 
-    final stressScoreText = (_stressScore != null)
-        ? _stressScore.toString()
+    final heartRate = metrics.heartRate ?? _heartRate;
+    final spo2 = metrics.spo2 ?? _spo2;
+    final stressScore = metrics.stress ?? _stressScore;
+
+    final stressScoreText = (stressScore != null)
+        ? stressScore.toString()
         : '—';
-    final stressLabelText = _labelForStress(_stressScore);
+    final stressLabelText = stressScore != null
+        ? stressToLabel(stressScore.toDouble())
+        : '—';
 
     final sleepHoursText = (_sleep?.$1 != null) ? _sleep!.$1.toString() : '—';
     final sleepMinutesText = (_sleep?.$2 != null) ? _sleep!.$2.toString() : '—';
 
-    final heartRateText = (_heartRate != null) ? _heartRate.toString() : '—';
-    final spo2Text = (_spo2 != null) ? _spo2.toString() : '—';
+    final heartRateText = (heartRate != null) ? heartRate.toString() : '—';
+    final spo2Text = (spo2 != null) ? spo2.toString() : '—';
 
     return RefreshIndicator(
       onRefresh: _loadAll,
@@ -196,7 +213,7 @@ class _HealthCareScreenState extends State<HealthCareScreen> {
                       style: TextStyle(
                         color: AppColors.lightGray,
                         fontSize: 14,
-                        fontVariations: AppFontVariations.medium,
+                        fontWeight: AppFontWeight.medium,
                       ),
                     ),
                   ),
@@ -217,7 +234,9 @@ class _HealthCareScreenState extends State<HealthCareScreen> {
                             path: "/health-care-stress-detail",
                             iconSvgPath: "stress",
                             title: "스트레스",
-                            isStress: ((_stressScore ?? 0) / 20).toInt() + 1,
+                            isStress: stressScore != null
+                                ? stressLevelIndex(stressScore)
+                                : 0,
                             widget: Row(
                               crossAxisAlignment: CrossAxisAlignment.end,
                               children: [
@@ -226,7 +245,7 @@ class _HealthCareScreenState extends State<HealthCareScreen> {
                                   style: TextStyle(
                                     color: Colors.white,
                                     fontSize: 28,
-                                    fontVariations: AppFontVariations.bold,
+                                    fontWeight: AppFontWeight.bold,
                                   ),
                                 ),
                                 const SizedBox(width: 4),
@@ -235,7 +254,7 @@ class _HealthCareScreenState extends State<HealthCareScreen> {
                                   style: TextStyle(
                                     color: AppColors.lightGray,
                                     fontSize: 16,
-                                    fontVariations: AppFontVariations.medium,
+                                    fontWeight: AppFontWeight.medium,
                                   ),
                                 ),
                               ],
@@ -255,7 +274,7 @@ class _HealthCareScreenState extends State<HealthCareScreen> {
                                   style: TextStyle(
                                     color: Colors.white,
                                     fontSize: 28,
-                                    fontVariations: AppFontVariations.bold,
+                                    fontWeight: AppFontWeight.bold,
                                   ),
                                 ),
                                 const SizedBox(width: 2),
@@ -264,7 +283,7 @@ class _HealthCareScreenState extends State<HealthCareScreen> {
                                   style: TextStyle(
                                     color: AppColors.lightGray,
                                     fontSize: 16,
-                                    fontVariations: AppFontVariations.medium,
+                                    fontWeight: AppFontWeight.medium,
                                   ),
                                 ),
                                 const SizedBox(width: 4),
@@ -273,7 +292,7 @@ class _HealthCareScreenState extends State<HealthCareScreen> {
                                   style: TextStyle(
                                     color: Colors.white,
                                     fontSize: 28,
-                                    fontVariations: AppFontVariations.bold,
+                                    fontWeight: AppFontWeight.bold,
                                   ),
                                 ),
                                 const SizedBox(width: 2),
@@ -282,7 +301,7 @@ class _HealthCareScreenState extends State<HealthCareScreen> {
                                   style: TextStyle(
                                     color: AppColors.lightGray,
                                     fontSize: 16,
-                                    fontVariations: AppFontVariations.medium,
+                                    fontWeight: AppFontWeight.medium,
                                   ),
                                 ),
                               ],
@@ -306,7 +325,7 @@ class _HealthCareScreenState extends State<HealthCareScreen> {
                                   style: TextStyle(
                                     color: Colors.white,
                                     fontSize: 28,
-                                    fontVariations: AppFontVariations.bold,
+                                    fontWeight: AppFontWeight.bold,
                                   ),
                                 ),
                                 const SizedBox(width: 4),
@@ -315,7 +334,7 @@ class _HealthCareScreenState extends State<HealthCareScreen> {
                                   style: TextStyle(
                                     color: AppColors.lightGray,
                                     fontSize: 16,
-                                    fontVariations: AppFontVariations.medium,
+                                    fontWeight: AppFontWeight.medium,
                                   ),
                                 ),
                               ],
@@ -335,7 +354,7 @@ class _HealthCareScreenState extends State<HealthCareScreen> {
                                   style: TextStyle(
                                     color: Colors.white,
                                     fontSize: 28,
-                                    fontVariations: AppFontVariations.bold,
+                                    fontWeight: AppFontWeight.bold,
                                   ),
                                 ),
                                 const SizedBox(width: 4),
@@ -344,7 +363,7 @@ class _HealthCareScreenState extends State<HealthCareScreen> {
                                   style: TextStyle(
                                     color: AppColors.lightGray,
                                     fontSize: 16,
-                                    fontVariations: AppFontVariations.medium,
+                                    fontWeight: AppFontWeight.medium,
                                   ),
                                 ),
                               ],
@@ -358,17 +377,6 @@ class _HealthCareScreenState extends State<HealthCareScreen> {
               ],
             ),
     );
-  }
-
-  /// 단순 라벨러: 필요 시 네이티브에서 라벨을 주도록 바꿔도 됩니다.
-  String _labelForStress(int? score) {
-    if (score == null) return '—';
-    // pressure range(기본 30) 기준이 아니라 SDK가 0~100 범위를 쓰는 케이스도 있어
-    // 클리핑만 간단히…
-    final s = score.clamp(0, 100);
-    if (s <= 33) return '안심';
-    if (s <= 66) return '주의';
-    return '경고';
   }
 
   Widget _buildSyncingBanner() {
@@ -390,7 +398,7 @@ class _HealthCareScreenState extends State<HealthCareScreen> {
               style: TextStyle(
                 color: Colors.white,
                 fontSize: 14,
-                fontVariations: AppFontVariations.medium,
+                fontWeight: AppFontWeight.medium,
               ),
             ),
           ),
@@ -414,7 +422,7 @@ class _HealthCareScreenState extends State<HealthCareScreen> {
               style: TextStyle(
                 color: Colors.white,
                 fontSize: 14,
-                fontVariations: AppFontVariations.medium,
+                fontWeight: AppFontWeight.medium,
               ),
             ),
           ),
@@ -430,7 +438,7 @@ class _HealthCareScreenState extends State<HealthCareScreen> {
               style: TextStyle(
                 color: AppColors.lightPurple,
                 fontSize: 14,
-                fontVariations: AppFontVariations.medium,
+                fontWeight: AppFontWeight.medium,
               ),
             ),
           ),

@@ -127,7 +127,7 @@ class HealthChartTheme {
           style: TextStyle(
             color: AppColors.lightGray,
             fontSize: 11,
-            fontVariations: AppFontVariations.regular,
+            fontWeight: AppFontWeight.regular,
           ),
         );
       },
@@ -137,13 +137,17 @@ class HealthChartTheme {
   static TextStyle axisLabelStyle() => TextStyle(
     color: AppColors.lightGray,
     fontSize: 11,
-    fontVariations: AppFontVariations.regular,
+    fontWeight: AppFontWeight.regular,
   );
 
   static List<Color> areaGradientColors(DataType type) {
     final c = lineColor(type);
-    return [c.withValues(alpha: 0.22), c.withValues(alpha: 0.0)];
+    return [c.withValues(alpha: 0.12), c.withValues(alpha: 0.0)];
   }
+
+  /// Subtle single-tone fill (no multi-segment rainbow).
+  static Color areaFillColor(DataType type) =>
+      lineColor(type).withValues(alpha: 0.08);
 
   static ExtraLinesData? referenceLine({
     required double y,

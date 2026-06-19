@@ -4,6 +4,10 @@ import 'package:flutter/material.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/constants/colors.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/constants/fonts.dart';
 import 'package:picnique_rosary_healthcare_smartring/screens/layouts/background_layout.dart';
+import 'package:provider/provider.dart';
+import 'package:picnique_rosary_healthcare_smartring/providers/ring.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/ring_live_activity.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/ring_connection_coordinator.dart';
 import 'package:picnique_rosary_healthcare_smartring/util/TouchCounter.dart';
 import 'package:picnique_rosary_healthcare_smartring/db/app_db.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/db/db_manager.dart';
@@ -67,9 +71,46 @@ class _CatholicRosaryScreenState extends State<CatholicRosaryScreen>
   }
 
   Future<void> _startRecording() async {
+    final ring = context.read<Ring>();
+    final live = context.read<RingLiveActivity>();
+
+    if (!ring.isConnected) {
+      final hasSaved = ring.hasSavedDevice;
+      if (hasSaved) {
+        final ok = await RingConnectionCoordinator.instance.ensureConnected();
+        if (!ok && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('스마트링 연결 후 기록을 시작해 주세요.'),
+            ),
+          );
+          return;
+        }
+      } else if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('스마트링을 연결한 뒤 기록을 시작해 주세요.'),
+          ),
+        );
+        return;
+      }
+    }
+
     _sessionStart = DateTime.now();
     touchCounter.tapCount = 0;
-    await touchCounter.start();
+    try {
+      await touchCounter.start(
+        liveActivity: live,
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('반지 터치 모드를 켜지 못했어요.\n연결 상태를 확인한 뒤 다시 시도해 주세요.'),
+        ),
+      );
+      return;
+    }
     setState(() {
       _isRecording = true;
     });
@@ -163,7 +204,7 @@ class _CatholicRosaryScreenState extends State<CatholicRosaryScreen>
                           style: TextStyle(
                             color: Colors.white,
                             fontSize: 20,
-                            fontVariations: AppFontVariations.semiBold,
+                            fontWeight: AppFontWeight.semiBold,
                           ),
                         ),
                       ),
@@ -217,7 +258,7 @@ class _CatholicRosaryScreenState extends State<CatholicRosaryScreen>
                                 style: TextStyle(
                                   color: Colors.white,
                                   fontSize: 14,
-                                  fontVariations: AppFontVariations.regular,
+                                  fontWeight: AppFontWeight.regular,
                                 ),
                               ),
                               Icon(
@@ -252,7 +293,7 @@ class _CatholicRosaryScreenState extends State<CatholicRosaryScreen>
                           style: TextStyle(
                             color: Colors.white,
                             fontSize: 14,
-                            fontVariations: AppFontVariations.medium,
+                            fontWeight: AppFontWeight.medium,
                           ),
                         ),
                         SizedBox(width: 4),

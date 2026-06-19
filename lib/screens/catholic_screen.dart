@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:picnique_rosary_healthcare_smartring/core/constants/fonts.dart';
 
 class CatholicScreen extends StatelessWidget {
   const CatholicScreen({super.key});
@@ -124,7 +125,11 @@ class CatholicCard extends StatelessWidget {
                     SizedBox(height: 4),
                     Text(
                       subtitle,
-                      style: TextStyle(fontSize: 14, color: Colors.white70),
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: Colors.white70,
+                        fontWeight: AppFontWeight.regular,
+                      ),
                     ),
                   ],
                 ),

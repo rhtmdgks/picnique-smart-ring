@@ -11,7 +11,9 @@ import 'package:picnique_rosary_healthcare_smartring/screens/community/wyd_commu
 import 'package:picnique_rosary_healthcare_smartring/screens/connect_ring_screen.dart';
 import 'package:picnique_rosary_healthcare_smartring/screens/layouts/main_screen_layout.dart';
 import 'package:picnique_rosary_healthcare_smartring/screens/monitoring_setting_screen.dart';
+import 'package:picnique_rosary_healthcare_smartring/screens/system_setting_screen.dart';
 import 'package:picnique_rosary_healthcare_smartring/screens/sub/catholic_info_screen.dart';
+import 'package:picnique_rosary_healthcare_smartring/screens/sub/catholic_rosary_mystery_screen.dart';
 import 'package:picnique_rosary_healthcare_smartring/screens/sub/catholic_rosary_screen.dart';
 import 'package:picnique_rosary_healthcare_smartring/screens/sub/catholic_rosary_statistics_screen.dart';
 import 'package:picnique_rosary_healthcare_smartring/screens/sub/health_care_activity_screen.dart';
@@ -19,12 +21,18 @@ import 'package:picnique_rosary_healthcare_smartring/screens/sub/health_care_hea
 import 'package:picnique_rosary_healthcare_smartring/screens/sub/health_care_oxygen_screen.dart';
 import 'package:picnique_rosary_healthcare_smartring/screens/sub/health_care_sleep_screen.dart';
 import 'package:picnique_rosary_healthcare_smartring/screens/sub/health_care_stress_screen.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/battery_notification_service.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_background_sync.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_live_activity.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/health_live_metrics.dart';
+import 'package:picnique_rosary_healthcare_smartring/core/constants/fonts.dart';
 import 'package:provider/provider.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await SystemChrome.setPreferredOrientations([
+    DeviceOrientation.portraitUp,
+  ]);
 
   try {
     await DbManager.I.open();
@@ -33,6 +41,7 @@ void main() async {
   }
 
   await _ensureBatteryOptExclusion();
+  await BatteryNotificationService.initialize();
   runApp(
     MultiProvider(
       providers: [
@@ -44,10 +53,11 @@ void main() async {
           update: (_, m, _) => m.appDB,
         ),
         ChangeNotifierProvider(create: (_) => Ring()..loadFromPrefs()),
-        ChangeNotifierProvider(create: (_) => UserSetting()),
+        ChangeNotifierProvider(create: (_) => UserSetting()..loadFromPrefs()),
         ChangeNotifierProvider(create: (_) => MonitoringSetting()),
         ChangeNotifierProvider(create: (_) => RingSyncController()),
         ChangeNotifierProvider(create: (_) => RingLiveActivity()),
+        ChangeNotifierProvider(create: (_) => HealthLiveMetrics()),
       ],
       child: const MyApp(),
     ),
@@ -70,6 +80,23 @@ class MyApp extends StatelessWidget {
           seedColor: const Color(0xFF500EAD),
           brightness: Brightness.dark,
         ),
+        textTheme: const TextTheme(
+          displayLarge: TextStyle(fontWeight: AppFontWeight.bold),
+          displayMedium: TextStyle(fontWeight: AppFontWeight.bold),
+          displaySmall: TextStyle(fontWeight: AppFontWeight.semiBold),
+          headlineLarge: TextStyle(fontWeight: AppFontWeight.bold),
+          headlineMedium: TextStyle(fontWeight: AppFontWeight.semiBold),
+          headlineSmall: TextStyle(fontWeight: AppFontWeight.semiBold),
+          titleLarge: TextStyle(fontWeight: AppFontWeight.semiBold),
+          titleMedium: TextStyle(fontWeight: AppFontWeight.medium),
+          titleSmall: TextStyle(fontWeight: AppFontWeight.medium),
+          bodyLarge: TextStyle(fontWeight: AppFontWeight.regular),
+          bodyMedium: TextStyle(fontWeight: AppFontWeight.regular),
+          bodySmall: TextStyle(fontWeight: AppFontWeight.regular),
+          labelLarge: TextStyle(fontWeight: AppFontWeight.semiBold),
+          labelMedium: TextStyle(fontWeight: AppFontWeight.medium),
+          labelSmall: TextStyle(fontWeight: AppFontWeight.medium),
+        ),
         appBarTheme: const AppBarTheme(
           backgroundColor: Colors.transparent,
           foregroundColor: Colors.white,
@@ -79,10 +106,9 @@ class MyApp extends StatelessWidget {
       home: const MainScreenLayout(),
       routes: {
         '/connect-ring-setting': (_) => ConnectRingSettingScreen(),
-        '/search-ring-setting': (_) => MonitoringSettingScreen(),
         '/monitoring-setting': (_) => MonitoringSettingScreen(),
         '/updrade-setting': (_) => MonitoringSettingScreen(),
-        '/system-setting': (_) => MonitoringSettingScreen(),
+        '/system-setting': (_) => const SystemSettingScreen(),
         '/health-heart-rate-detail': (_) => const HealthCareHeartScreen(),
         '/health-oxygen-detail': (_) => const HealthCareOxygenScreen(),
         '/health-care-stress-detail': (_) => const HealthCareStressScreen(),
@@ -90,6 +116,8 @@ class MyApp extends StatelessWidget {
         '/health-care-sleep-detail': (_) => const HealthCareSleepScreen(),
         '/catholic-info-screen': (_) => CatholicInfoScreen(),
         '/catholic-rosary-screen': (_) => const CatholicRosaryScreen(),
+        '/catholic-rosary-mystery-screen': (_) =>
+            const CatholicRosaryMysteryScreen(),
         '/wyd-community': (_) => const WydCommunityPlaceholderScreen(),
         '/catholic-rosary-statistics-screen': (_) =>
             const CatholicRosaryStatisticsScreen(),

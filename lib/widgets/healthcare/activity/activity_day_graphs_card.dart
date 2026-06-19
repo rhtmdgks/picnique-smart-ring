@@ -248,7 +248,7 @@ class ActivityGraphCard extends StatelessWidget {
             style: TextStyle(
               color: tooltipColor,
               fontSize: 16,
-              fontVariations: AppFontVariations.medium,
+              fontWeight: AppFontWeight.medium,
             ),
           ),
           Row(
@@ -259,7 +259,7 @@ class ActivityGraphCard extends StatelessWidget {
                 style: TextStyle(
                   color: Colors.white,
                   fontSize: 22,
-                  fontVariations: AppFontVariations.bold,
+                  fontWeight: AppFontWeight.bold,
                 ),
               ),
               Text(
@@ -267,7 +267,7 @@ class ActivityGraphCard extends StatelessWidget {
                 style: TextStyle(
                   color: AppColors.lightGray,
                   fontSize: 14,
-                  fontVariations: AppFontVariations.regular,
+                  fontWeight: AppFontWeight.regular,
                 ),
               ),
             ],

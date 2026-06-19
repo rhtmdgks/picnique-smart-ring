@@ -19,11 +19,11 @@ class BottomNavBar extends StatelessWidget {
         elevation: 0,
         selectedLabelStyle: TextStyle(
           fontSize: 14,
-          fontVariations: AppFontVariations.medium,
+          fontWeight: AppFontWeight.semiBold,
         ),
         unselectedLabelStyle: TextStyle(
           fontSize: 14,
-          fontVariations: AppFontVariations.light,
+          fontWeight: AppFontWeight.light,
         ),
         backgroundColor: Colors.transparent,
         currentIndex: index,

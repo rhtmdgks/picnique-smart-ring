@@ -40,7 +40,7 @@ class RangeToggleButton extends StatelessWidget {
             style: TextStyle(
               color: Colors.black,
               fontSize: 12,
-              fontVariations: AppFontVariations.medium,
+              fontWeight: isSelected ? AppFontWeight.semiBold : AppFontWeight.medium,
             ),
           ),
         ),

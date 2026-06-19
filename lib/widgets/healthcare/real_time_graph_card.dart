@@ -130,7 +130,7 @@ Future<DateTime?> showActivityCalendarSheet({
                               style: const TextStyle(
                                 color: Colors.white,
                                 fontSize: 20,
-                                fontVariations: AppFontVariations.semiBold,
+                                fontWeight: AppFontWeight.semiBold,
                               ),
                             ),
                           ),
@@ -168,7 +168,7 @@ Future<DateTime?> showActivityCalendarSheet({
                                   style: TextStyle(
                                     color: AppColors.lightGray,
                                     fontSize: 12,
-                                    fontVariations: AppFontVariations.regular,
+                                    fontWeight: AppFontWeight.regular,
                                   ),
                                 ),
                               ),
@@ -181,7 +181,7 @@ Future<DateTime?> showActivityCalendarSheet({
                                   style: const TextStyle(
                                     color: AppColors.lightGray,
                                     fontSize: 12,
-                                    fontVariations: AppFontVariations.regular,
+                                    fontWeight: AppFontWeight.regular,
                                   ),
                                 ),
                               ),
@@ -241,8 +241,7 @@ Future<DateTime?> showActivityCalendarSheet({
                                           style: TextStyle(
                                             color: Colors.white,
                                             fontSize: 14,
-                                            fontVariations:
-                                                AppFontVariations.regular,
+                                            fontWeight: AppFontWeight.regular,
                                           ),
                                         ),
                                       ],
@@ -1165,13 +1164,15 @@ class _RealTimeGraphCardState extends State<RealTimeGraphCard> {
     final spots = _barDataToDotSpots(barData);
     final useFullDayAxis =
         widget.selectedRange == ToggleRange.day && barData.isNotEmpty;
+    final slotCount = barData.length;
     return HealthAreaLineChart(
       spots: spots,
       dataType: widget.dataType,
       range: widget.selectedRange,
       unit: widget.unit,
-      minX: useFullDayAxis ? barData.first.x.toDouble() : null,
-      maxX: useFullDayAxis ? barData.last.x.toDouble() : null,
+      minX: useFullDayAxis ? 0 : null,
+      maxX: useFullDayAxis ? (slotCount - 1).toDouble() : null,
+      dayAnchor: useFullDayAxis ? selectedDate : null,
       referenceLineY: widget.dataType == DataType.Oxygen ? 95.0 : null,
     );
   }
@@ -1375,7 +1376,7 @@ class _RealTimeGraphCardState extends State<RealTimeGraphCard> {
                     style: TextStyle(
                       color: AppColors.lightGray,
                       fontSize: 14,
-                      fontVariations: AppFontVariations.light,
+                      fontWeight: AppFontWeight.light,
                     ),
                   ),
                   Row(
@@ -1386,7 +1387,7 @@ class _RealTimeGraphCardState extends State<RealTimeGraphCard> {
                         style: TextStyle(
                           color: AppColors.lightGray,
                           fontSize: 14,
-                          fontVariations: AppFontVariations.regular,
+                          fontWeight: AppFontWeight.medium,
                         ),
                       ),
                       SizedBox(width: 4),
@@ -1395,7 +1396,7 @@ class _RealTimeGraphCardState extends State<RealTimeGraphCard> {
                         style: TextStyle(
                           color: Colors.white,
                           fontSize: 20,
-                          fontVariations: AppFontVariations.medium,
+                          fontWeight: AppFontWeight.semiBold,
                         ),
                       ),
                       SizedBox(width: 4),
@@ -1405,7 +1406,7 @@ class _RealTimeGraphCardState extends State<RealTimeGraphCard> {
                           style: TextStyle(
                             color: AppColors.lightGray,
                             fontSize: 16,
-                            fontVariations: AppFontVariations.regular,
+                            fontWeight: AppFontWeight.regular,
                           ),
                         ),
                     ],

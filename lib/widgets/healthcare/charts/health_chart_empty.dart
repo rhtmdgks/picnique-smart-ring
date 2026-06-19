@@ -27,7 +27,7 @@ class HealthChartEmpty extends StatelessWidget {
             style: TextStyle(
               color: AppColors.lightGray,
               fontSize: 14,
-              fontVariations: AppFontVariations.regular,
+              fontWeight: AppFontWeight.regular,
             ),
           ),
         ],

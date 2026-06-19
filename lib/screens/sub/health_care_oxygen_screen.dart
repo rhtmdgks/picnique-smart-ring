@@ -12,6 +12,8 @@ import 'package:picnique_rosary_healthcare_smartring/util/TrendUtil.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/health_message.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/real_time_card.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/charts/health_chart_card.dart';
+import 'package:provider/provider.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/health_live_metrics.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/sub_app_bar.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/db/db_manager.dart';
 
@@ -104,6 +106,7 @@ class _HealthCareOxygenScreenState extends State<HealthCareOxygenScreen> {
     final value = await persistManualMeasurement(
       dataType: DataType.Oxygen,
       result: result,
+      metrics: context.read<HealthLiveMetrics>(),
     );
     if (!mounted || value == null) return;
     setState(() {
@@ -137,7 +140,7 @@ class _HealthCareOxygenScreenState extends State<HealthCareOxygenScreen> {
                         style: TextStyle(
                           color: Colors.white,
                           fontSize: 20,
-                          fontVariations: AppFontVariations.regular,
+                          fontWeight: AppFontWeight.semiBold,
                         ),
                       ),
                       SizedBox(width: 4),
@@ -146,7 +149,7 @@ class _HealthCareOxygenScreenState extends State<HealthCareOxygenScreen> {
                         style: TextStyle(
                           color: AppColors.lightGray,
                           fontSize: 16,
-                          fontVariations: AppFontVariations.regular,
+                          fontWeight: AppFontWeight.regular,
                         ),
                       ),
                     ],

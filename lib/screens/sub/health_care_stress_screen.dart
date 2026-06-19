@@ -12,6 +12,8 @@ import 'package:picnique_rosary_healthcare_smartring/util/stress.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/real_time_card.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/charts/health_chart_card.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/stress_hrv_messages.dart';
+import 'package:provider/provider.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/health_live_metrics.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/sub_app_bar.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/db/db_manager.dart';
 
@@ -106,6 +108,7 @@ class _HealthCareStressScreenState extends State<HealthCareStressScreen> {
     final value = await persistManualMeasurement(
       dataType: DataType.Stress,
       result: result,
+      metrics: context.read<HealthLiveMetrics>(),
     );
     if (!mounted || value == null) return;
     setState(() {
@@ -140,7 +143,7 @@ class _HealthCareStressScreenState extends State<HealthCareStressScreen> {
                         style: TextStyle(
                           color: Colors.white,
                           fontSize: 20,
-                          fontVariations: AppFontVariations.regular,
+                          fontWeight: AppFontWeight.semiBold,
                         ),
                       ),
                       SizedBox(width: 4),
@@ -149,7 +152,7 @@ class _HealthCareStressScreenState extends State<HealthCareStressScreen> {
                         style: TextStyle(
                           color: AppColors.lightGray,
                           fontSize: 16,
-                          fontVariations: AppFontVariations.regular,
+                          fontWeight: AppFontWeight.regular,
                         ),
                       ),
                     ],

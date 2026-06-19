@@ -121,7 +121,7 @@ class ActivityGoalCard extends StatelessWidget {
                                 style: const TextStyle(
                                   color: Colors.white,
                                   fontSize: 20,
-                                  fontVariations: AppFontVariations.semiBold,
+                                  fontWeight: AppFontWeight.semiBold,
                                 ),
                               ),
                             ),
@@ -159,7 +159,7 @@ class ActivityGoalCard extends StatelessWidget {
                                     style: TextStyle(
                                       color: AppColors.lightGray,
                                       fontSize: 12,
-                                      fontVariations: AppFontVariations.regular,
+                                      fontWeight: AppFontWeight.regular,
                                     ),
                                   ),
                                 ),
@@ -172,7 +172,7 @@ class ActivityGoalCard extends StatelessWidget {
                                     style: const TextStyle(
                                       color: AppColors.lightGray,
                                       fontSize: 12,
-                                      fontVariations: AppFontVariations.regular,
+                                      fontWeight: AppFontWeight.regular,
                                     ),
                                   ),
                                 ),
@@ -265,7 +265,7 @@ class ActivityGoalCard extends StatelessWidget {
                   style: TextStyle(
                     color: Colors.white,
                     fontSize: 20,
-                    fontVariations: AppFontVariations.semiBold,
+                    fontWeight: AppFontWeight.semiBold,
                   ),
                 ),
               ),
@@ -390,7 +390,7 @@ class _Metric extends StatelessWidget {
           style: TextStyle(
             color: color,
             fontSize: 14,
-            fontVariations: AppFontVariations.semiBold,
+            fontWeight: AppFontWeight.semiBold,
           ),
         ),
         Text(
@@ -398,7 +398,7 @@ class _Metric extends StatelessWidget {
           style: TextStyle(
             color: Colors.white,
             fontSize: 22,
-            fontVariations: AppFontVariations.bold,
+            fontWeight: AppFontWeight.bold,
           ),
         ),
         Text(
@@ -406,7 +406,7 @@ class _Metric extends StatelessWidget {
           style: TextStyle(
             color: AppColors.lightGray,
             fontSize: 12,
-            fontVariations: AppFontVariations.medium,
+            fontWeight: AppFontWeight.medium,
           ),
         ),
       ],

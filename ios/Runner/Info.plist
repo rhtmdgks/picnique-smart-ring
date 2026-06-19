@@ -60,6 +60,12 @@
 	<array>
 		<string>bluetooth-central</string>
 		<string>bluetooth-peripheral</string>
+		<string>fetch</string>
+		<string>processing</string>
+	</array>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>kr.picnique.smartring.ring-sync</string>
 	</array>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
@@ -70,15 +76,12 @@
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
-		<string>UIInterfaceOrientationLandscapeLeft</string>
-		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
 	<key>UISupportedInterfaceOrientations~ipad</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
-		<string>UIInterfaceOrientationPortraitUpsideDown</string>
-		<string>UIInterfaceOrientationLandscapeLeft</string>
-		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 </dict>
 </plist>

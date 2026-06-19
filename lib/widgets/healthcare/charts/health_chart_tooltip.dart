@@ -20,7 +20,7 @@ class HealthChartTooltip {
           style: TextStyle(
             color: AppColors.lightGray,
             fontSize: 11,
-            fontVariations: AppFontVariations.regular,
+            fontWeight: AppFontWeight.regular,
           ),
         ),
         TextSpan(
@@ -28,7 +28,7 @@ class HealthChartTooltip {
           style: TextStyle(
             color: Colors.white,
             fontSize: 14,
-            fontVariations: AppFontVariations.semiBold,
+            fontWeight: AppFontWeight.semiBold,
           ),
         ),
         TextSpan(
@@ -36,7 +36,7 @@ class HealthChartTooltip {
           style: TextStyle(
             color: AppColors.lightGray,
             fontSize: 12,
-            fontVariations: AppFontVariations.regular,
+            fontWeight: AppFontWeight.regular,
           ),
         ),
       ],
@@ -57,7 +57,7 @@ class HealthChartTooltip {
           style: TextStyle(
             color: AppColors.lightGray,
             fontSize: 11,
-            fontVariations: AppFontVariations.regular,
+            fontWeight: AppFontWeight.regular,
           ),
         ),
         TextSpan(
@@ -65,7 +65,7 @@ class HealthChartTooltip {
           style: TextStyle(
             color: Colors.white,
             fontSize: 14,
-            fontVariations: AppFontVariations.semiBold,
+            fontWeight: AppFontWeight.semiBold,
           ),
         ),
         TextSpan(
@@ -73,7 +73,7 @@ class HealthChartTooltip {
           style: TextStyle(
             color: AppColors.lightGray,
             fontSize: 12,
-            fontVariations: AppFontVariations.regular,
+            fontWeight: AppFontWeight.regular,
           ),
         ),
       ],

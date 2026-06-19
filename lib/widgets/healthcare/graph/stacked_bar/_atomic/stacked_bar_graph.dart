@@ -548,22 +548,22 @@ class _StackedBarGraphState extends State<StackedBarGraph> {
                       const dateStyle = TextStyle(
                         color: AppColors.lightGray,
                         fontSize: 12,
-                        fontVariations: AppFontVariations.medium,
+                        fontWeight: AppFontWeight.medium,
                       );
                       const timeRangeStyle = TextStyle(
                         color: Colors.white,
                         fontSize: 14,
-                        fontVariations: AppFontVariations.medium,
+                        fontWeight: AppFontWeight.medium,
                       );
                       const stageStyle = TextStyle(
                         color: AppColors.lightGray,
                         fontSize: 12,
-                        fontVariations: AppFontVariations.light,
+                        fontWeight: AppFontWeight.light,
                       );
                       const durationStyle = TextStyle(
                         color: Colors.white,
                         fontSize: 12,
-                        fontVariations: AppFontVariations.medium,
+                        fontWeight: AppFontWeight.medium,
                       );
 
                       final children = <TextSpan>[

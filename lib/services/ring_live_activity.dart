@@ -19,19 +19,30 @@ class RingLiveActivity with ChangeNotifier {
   int _steps = 0;
   int _calories = 0;
   int _distanceM = 0;
+  int _touchCount = 0;
   bool _tracking = false;
 
   StreamSubscription<dynamic>? _subscription;
   Timer? _pollTimer;
-  VoidCallback? _onDisconnected;
 
   int get steps => _steps;
   int get calories => _calories;
   int get distanceMeters => _distanceM;
+  int get touchCount => _touchCount;
   bool get isTracking => _tracking;
 
-  Future<void> start({VoidCallback? onDisconnected}) async {
-    _onDisconnected = onDisconnected;
+  void resetTouchCount() {
+    _touchCount = 0;
+    notifyListeners();
+  }
+
+  void syncTouchCount(int count) {
+    if (count == _touchCount) return;
+    _touchCount = count;
+    notifyListeners();
+  }
+
+  Future<void> start() async {
     if (_subscription != null) return;
 
     try {
@@ -56,7 +67,6 @@ class RingLiveActivity with ChangeNotifier {
   }
 
   Future<void> stop() async {
-    _onDisconnected = null;
     await _subscription?.cancel();
     _subscription = null;
     _pollTimer?.cancel();
@@ -88,6 +98,13 @@ class RingLiveActivity with ChangeNotifier {
     if (event is! Map) return;
 
     switch (event['type']) {
+      case 'ringTouch':
+        final count = _asInt(event['count']);
+        if (count > 0 && count != _touchCount) {
+          _touchCount = count;
+          notifyListeners();
+        }
+        break;
       case 'rtSportSummary':
         _apply(
           steps: _asInt(event['steps']),
@@ -96,7 +113,6 @@ class RingLiveActivity with ChangeNotifier {
         );
         break;
       case 'disconnected':
-        _onDisconnected?.call();
         unawaited(stop());
         break;
     }

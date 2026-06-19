@@ -12,10 +12,14 @@ class SettingScreen extends StatefulWidget {
 class _SettingScreenState extends State<SettingScreen> {
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: EdgeInsetsGeometry.all(12),
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(12),
       child: Column(
-        children: [RingStatusCard(), SizedBox(height: 16), SettingCard()],
+        children: [
+          const RingStatusCard(),
+          const SizedBox(height: 16),
+          const SettingCard(),
+        ],
       ),
     );
   }

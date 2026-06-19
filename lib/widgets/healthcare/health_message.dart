@@ -33,7 +33,7 @@ class HealthMessageCard extends StatelessWidget {
                 style: TextStyle(
                   color: Colors.white,
                   fontSize: 16,
-                  fontVariations: AppFontVariations.semiBold,
+                  fontWeight: AppFontWeight.semiBold,
                 ),
               ),
             ],
@@ -44,7 +44,7 @@ class HealthMessageCard extends StatelessWidget {
             style: TextStyle(
               color: AppColors.lightGray,
               fontSize: 14,
-              fontVariations: AppFontVariations.medium,
+              fontWeight: AppFontWeight.medium,
             ),
           ),
         ],
