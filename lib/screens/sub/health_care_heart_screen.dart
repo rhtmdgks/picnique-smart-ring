@@ -18,6 +18,7 @@ import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/charts/h
 import 'package:provider/provider.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/ring.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ble_command_queue.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/health_data_refresh_notifier.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/health_live_metrics.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/sub_app_bar.dart';
 
@@ -50,9 +51,9 @@ class _HealthCareHeartScreenState extends State<HealthCareHeartScreen> {
   String _latestLabel = "-"; // "5분 전" 등
   String _latestBpmText = "-"; // "84" 등
   bool _latestLoading = false;
-  int _chartRefreshKey = 0;
   bool _hrSyncStarted = false;
   Ring? _ring;
+  HealthDataRefreshNotifier? _healthRefresh;
 
   /// 날짜/범위와 무관하게 한 번만 로드해 유지
   late final Future<String> _healthMessageFuture = Future.wait([
@@ -88,19 +89,32 @@ class _HealthCareHeartScreenState extends State<HealthCareHeartScreen> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    final next = context.read<Ring>();
-    if (!identical(_ring, next)) {
+    final nextRing = context.read<Ring>();
+    if (!identical(_ring, nextRing)) {
       _ring?.removeListener(_onRingStateChanged);
-      _ring = next;
+      _ring = nextRing;
       _ring!.addListener(_onRingStateChanged);
       _onRingStateChanged();
+    }
+    final nextRefresh = context.read<HealthDataRefreshNotifier>();
+    if (!identical(_healthRefresh, nextRefresh)) {
+      _healthRefresh?.removeListener(_onHealthDataRefresh);
+      _healthRefresh = nextRefresh;
+      _healthRefresh!.addListener(_onHealthDataRefresh);
     }
   }
 
   @override
   void dispose() {
     _ring?.removeListener(_onRingStateChanged);
+    _healthRefresh?.removeListener(_onHealthDataRefresh);
     super.dispose();
+  }
+
+  void _onHealthDataRefresh() {
+    if (_healthRefresh?.affects(DataType.HeartRate) ?? false) {
+      unawaited(_loadLatestHeart(syncFromRing: false));
+    }
   }
 
   void _onRingStateChanged() {
@@ -165,18 +179,12 @@ class _HealthCareHeartScreenState extends State<HealthCareHeartScreen> {
   }
 
   Future<void> _onManualMeasureSuccess(Map<dynamic, dynamic> result) async {
-    final value = await persistManualMeasurement(
+    await persistManualMeasurement(
       dataType: DataType.HeartRate,
       result: result,
       metrics: context.read<HealthLiveMetrics>(),
+      refreshNotifier: context.read<HealthDataRefreshNotifier>(),
     );
-    if (!mounted || value == null) return;
-    setState(() {
-      _latestBpmText = value.toString();
-      _latestLabel = '방금 전';
-      _latestLoading = false;
-      _chartRefreshKey++;
-    });
   }
 
   @override
@@ -254,7 +262,6 @@ class _HealthCareHeartScreenState extends State<HealthCareHeartScreen> {
                 ),
                 const SizedBox(height: 16),
                 HealthChartCard(
-                  key: ValueKey(_chartRefreshKey),
                   unit: unit,
                   selectedRange: _selectedRange,
                   onChanged: (range) {

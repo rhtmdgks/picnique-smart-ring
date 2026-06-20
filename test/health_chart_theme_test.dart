@@ -17,15 +17,16 @@ void main() {
       expect(b.maxY, greaterThan(90));
     });
 
-    test('oxygen clamps 85-100', () {
+    test('oxygen clamps 75-100 with 5 interval', () {
       final b = HealthChartTheme.computeYBounds(
         dataType: DataType.Oxygen,
         values: [96, 98],
-        fixedMin: 85,
-        fixedMax: 100,
+        fixedMin: HealthChartTheme.oxygenChartMinY,
+        fixedMax: HealthChartTheme.oxygenChartMaxY,
       );
-      expect(b.minY, 85);
+      expect(b.minY, 75);
       expect(b.maxY, 100);
+      expect(b.intervalY, 5);
     });
 
     test('stress bar color zones', () {

@@ -375,6 +375,52 @@ class BleBridge(private val appContext: Context) {
         }
     }
 
+    /** 배터리 % + 충전 여부 (백그라운드 주기 확인용). */
+    fun getBatteryStatus(result: MethodChannel.Result) {
+        try {
+            val req = SimpleKeyReq(Constants.CMD_GET_DEVICE_ELECTRICITY_VALUE)
+
+            var responded = false
+            val timeout = Runnable {
+                if (!responded) {
+                    responded = true
+                    result.error("BATTERY_TIMEOUT", "BatteryRsp not received in time", null)
+                }
+            }
+            mainHandler.postDelayed(timeout, 10_000)
+
+            CommandHandle.getInstance().executeReqCmd(req, object : ICommandResponse<BatteryRsp> {
+                override fun onDataResponse(response: BatteryRsp?) {
+                    if (responded) return
+                    responded = true
+                    mainHandler.removeCallbacks(timeout)
+
+                    if (response == null) {
+                        result.error("BATTERY_NULL", "BatteryRsp is null", null)
+                        return
+                    }
+                    val level = response.getBatteryValue()
+                    val chargingRaw = reflectInt(
+                        response,
+                        "getCharging",
+                        "charging",
+                        "isCharging",
+                        "getChargingState",
+                    ) ?: 0
+                    result.success(
+                        mapOf(
+                            "level" to level,
+                            "battery" to level,
+                            "charging" to (chargingRaw > 0),
+                        ),
+                    )
+                }
+            })
+        } catch (t: Throwable) {
+            result.error("BATTERY_FAIL", t.message, null)
+        }
+    }
+
     fun syncTimeAndGetCoreFeatures(result: MethodChannel.Result) {
         val safe = OneShotResult(result)
         val main = Handler(Looper.getMainLooper())

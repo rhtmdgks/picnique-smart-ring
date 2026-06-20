@@ -75,7 +75,18 @@ class BatteryNotificationService {
 
   static Future<bool> isEnabled() async {
     final prefs = await SharedPreferences.getInstance();
-    return prefs.getBool(prefsKeyEnabled) ?? false;
+    return prefs.getBool(prefsKeyEnabled) ?? true;
+  }
+
+  /// 반지 연결·백그라운드 keepalive 전 배터리 부족 푸시를 켜고 권한을 요청한다.
+  static Future<void> ensureReadyForBackgroundAlerts() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!prefs.containsKey(prefsKeyEnabled)) {
+      await prefs.setBool(prefsKeyEnabled, true);
+    }
+    if (prefs.getBool(prefsKeyEnabled) ?? true) {
+      await requestNotificationPermission();
+    }
   }
 
   static Future<void> setEnabled(bool enabled) async {

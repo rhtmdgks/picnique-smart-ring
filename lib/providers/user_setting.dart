@@ -15,7 +15,10 @@ class UserSetting with ChangeNotifier {
 
   Future<void> loadFromPrefs() async {
     final prefs = await SharedPreferences.getInstance();
-    _isChargeAlarmOn = prefs.getBool(_kChargeAlarm) ?? false;
+    _isChargeAlarmOn = prefs.getBool(_kChargeAlarm) ?? true;
+    if (!prefs.containsKey(_kChargeAlarm)) {
+      await prefs.setBool(_kChargeAlarm, true);
+    }
     _loaded = true;
     notifyListeners();
   }

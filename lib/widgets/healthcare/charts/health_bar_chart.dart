@@ -241,7 +241,7 @@ class HealthBarChart extends StatelessWidget {
     }
     try {
       final dt = getDateTimeFromIndex(xIndex, range, dataType);
-      if (range == ToggleRange.halfYear || range == ToggleRange.year) {
+      if (range == ToggleRange.halfYear) {
         return '${dt.month}월';
       }
       return '${dt.month}/${dt.day}';

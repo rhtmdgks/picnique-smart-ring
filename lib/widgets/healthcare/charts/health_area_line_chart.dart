@@ -10,6 +10,56 @@ import 'package:picnique_rosary_healthcare_smartring/core/enum/toggle_range.dart
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/charts/health_chart_empty.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/charts/health_chart_tooltip.dart';
 
+/// SpO₂ Y축 위험·주의·정상 구간 배경 (80% 미만 강조).
+class SpO2ZonePainter extends CustomPainter {
+  final double minY;
+  final double maxY;
+
+  const SpO2ZonePainter({
+    required this.minY,
+    required this.maxY,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    double yFor(double value) {
+      final span = maxY - minY;
+      if (span <= 0) return size.height;
+      final t = (value - minY) / span;
+      return size.height * (1 - t.clamp(0.0, 1.0));
+    }
+
+    final zones = <(double, double, Color, double)>[
+      (
+        minY,
+        HealthChartTheme.oxygenDangerThreshold,
+        AppColors.StressRed,
+        0.28,
+      ),
+      (
+        HealthChartTheme.oxygenDangerThreshold,
+        90,
+        AppColors.StressOrange,
+        0.12,
+      ),
+      (90, maxY, const Color(0xFF5AC8FA), 0.07),
+    ];
+
+    for (final (lo, hi, color, alpha) in zones) {
+      final top = yFor(hi);
+      final bottom = yFor(lo);
+      canvas.drawRect(
+        Rect.fromLTRB(0, top, size.width, bottom),
+        Paint()..color = color.withValues(alpha: alpha),
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant SpO2ZonePainter oldDelegate) =>
+      oldDelegate.minY != minY || oldDelegate.maxY != maxY;
+}
+
 /// Area + line chart for HR, SpO2 (Apple Health–style smooth line, no stray dots).
 class HealthAreaLineChart extends StatelessWidget {
   final List<FlSpot> spots;
@@ -42,7 +92,6 @@ class HealthAreaLineChart extends StatelessWidget {
       case ToggleRange.month:
         return 2;
       case ToggleRange.halfYear:
-      case ToggleRange.year:
         return 2;
     }
   }
@@ -65,9 +114,15 @@ class HealthAreaLineChart extends StatelessWidget {
     final bounds = HealthChartTheme.computeYBounds(
       dataType: dataType,
       values: values,
-      fixedMin: dataType == DataType.Oxygen ? 85 : null,
-      fixedMax: dataType == DataType.Oxygen ? 100 : null,
+      fixedMin: dataType == DataType.Oxygen
+          ? HealthChartTheme.oxygenChartMinY
+          : null,
+      fixedMax: dataType == DataType.Oxygen
+          ? HealthChartTheme.oxygenChartMaxY
+          : null,
     );
+
+    final isOxygen = dataType == DataType.Oxygen;
 
     final xMin = minX ?? validSpots.first.x;
     final xMax = maxX ?? validSpots.last.x;
@@ -87,16 +142,41 @@ class HealthAreaLineChart extends StatelessWidget {
       final segmentSpots = entry.value;
       final isPrimary = i == primaryIndex;
       final spotsForLine = _lineSpotsForSegment(segmentSpots);
+      final segmentColor = isOxygen
+          ? HealthChartTheme.oxygenLineColorForSegment(spotsForLine)
+          : lineColor;
 
       return LineChartBarData(
         spots: spotsForLine,
         isCurved: spotsForLine.length > 2,
         curveSmoothness: 0.22,
         preventCurveOverShooting: true,
-        color: lineColor,
-        barWidth: 2.5,
+        color: segmentColor,
+        barWidth: isOxygen &&
+                spotsForLine.any(
+                  (s) => s.y > 0 && s.y < HealthChartTheme.oxygenDangerThreshold,
+                )
+            ? 3.2
+            : 2.5,
         isStrokeCapRound: true,
-        dotData: const FlDotData(show: false),
+        dotData: FlDotData(
+          show: isOxygen,
+          getDotPainter: (spot, percent, bar, index) {
+            if (spot.y <= 0) {
+              return FlDotCirclePainter(radius: 0, color: Colors.transparent);
+            }
+            final dotColor = HealthChartTheme.oxygenSpotColor(spot.y);
+            final radius = spot.y < HealthChartTheme.oxygenDangerThreshold
+                ? 4.5
+                : 3.0;
+            return FlDotCirclePainter(
+              radius: radius,
+              color: dotColor,
+              strokeWidth: 1.5,
+              strokeColor: Colors.white.withValues(alpha: 0.85),
+            );
+          },
+        ),
         belowBarData: BarAreaData(
           show: isPrimary,
           applyCutOffY: true,
@@ -105,18 +185,19 @@ class HealthAreaLineChart extends StatelessWidget {
               ? LinearGradient(
                   begin: Alignment.topCenter,
                   end: Alignment.bottomCenter,
-                  colors: gradientColors,
+                  colors: isOxygen
+                      ? [
+                          segmentColor.withValues(alpha: 0.18),
+                          segmentColor.withValues(alpha: 0.02),
+                        ]
+                      : gradientColors,
                 )
               : null,
         ),
       );
     }).toList();
 
-    return Semantics(
-      label: '${dataType.name} chart',
-      child: SizedBox(
-        height: HealthChartTheme.chartHeight,
-        child: LineChart(
+    final chart = LineChart(
           LineChartData(
             minX: xMin,
             maxX: xMax,
@@ -126,9 +207,11 @@ class HealthAreaLineChart extends StatelessWidget {
               horizontalInterval: bounds.intervalY,
             ),
             borderData: HealthChartTheme.border(),
-            extraLinesData: referenceLineY != null
-                ? HealthChartTheme.referenceLine(y: referenceLineY!)
-                : null,
+            extraLinesData: isOxygen
+                ? HealthChartTheme.oxygenReferenceLines()
+                : (referenceLineY != null
+                      ? HealthChartTheme.referenceLine(y: referenceLineY!)
+                      : null),
             titlesData: FlTitlesData(
               topTitles: const AxisTitles(
                 sideTitles: SideTitles(showTitles: false),
@@ -140,6 +223,7 @@ class HealthAreaLineChart extends StatelessWidget {
                 sideTitles: HealthChartTheme.ySideTitles(
                   bounds: bounds,
                   unit: unit,
+                  dataType: dataType,
                 ),
               ),
               bottomTitles: AxisTitles(
@@ -202,7 +286,11 @@ class HealthAreaLineChart extends StatelessWidget {
                     HealthChartTooltip.crosshairLine(),
                     FlDotData(
                       getDotPainter: (spot, percent, bar, index) =>
-                          HealthChartTooltip.touchedDot(lineColor),
+                          HealthChartTooltip.touchedDot(
+                            isOxygen
+                                ? HealthChartTheme.oxygenSpotColor(spot.y)
+                                : lineColor,
+                          ),
                     ),
                   );
                 }).toList();
@@ -211,7 +299,26 @@ class HealthAreaLineChart extends StatelessWidget {
             lineBarsData: lineBars,
           ),
           duration: HealthChartTheme.animationDuration,
-        ),
+        );
+
+    return Semantics(
+      label: '${dataType.name} chart',
+      child: SizedBox(
+        height: HealthChartTheme.chartHeight,
+        child: isOxygen
+            ? Stack(
+                fit: StackFit.expand,
+                children: [
+                  CustomPaint(
+                    painter: SpO2ZonePainter(
+                      minY: bounds.minY,
+                      maxY: bounds.maxY,
+                    ),
+                  ),
+                  chart,
+                ],
+              )
+            : chart,
       ),
     );
   }

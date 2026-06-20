@@ -48,6 +48,30 @@ enum IosPendingHealthQueue {
   static func clear() {
     try? FileManager.default.removeItem(at: fileURL)
   }
+
+  static func replaceAll(_ records: [[String: Any]]) {
+    if records.isEmpty {
+      clear()
+      return
+    }
+    var text = ""
+    for record in records {
+      guard let data = try? JSONSerialization.data(withJSONObject: record),
+            let line = String(data: data, encoding: .utf8) else { continue }
+      text += line + "\n"
+    }
+    try? text.write(to: fileURL, atomically: true, encoding: .utf8)
+  }
+}
+
+enum IosRingBackgroundAlertPrefs {
+  private static let enabledKey = "flutter.battery_low_alert_enabled"
+
+  static var isBatteryLowAlertEnabled: Bool {
+    let d = UserDefaults.standard
+    if d.object(forKey: enabledKey) == nil { return true }
+    return d.bool(forKey: enabledKey)
+  }
 }
 
 enum IosRingBackgroundPrefs {
@@ -69,6 +93,61 @@ enum IosRingBackgroundPrefs {
 
   static var isEnabled: Bool { UserDefaults.standard.bool(forKey: enabledKey) }
   static var address: String? { UserDefaults.standard.string(forKey: addressKey) }
+}
+
+enum IosRingMeasurementPolicy {
+  static let ringAutoHeartIntervalMinutes = 5
+  static let appCollectIntervalSec = 5 * 60
+  static let minCollectGapMs = 5 * 60 * 1000
+}
+
+enum IosRingCollectionWatermark {
+  private static let heartDayKey = "ring_collect_heart_day"
+  private static let heartThroughKey = "ring_collect_heart_through"
+  private static let lastCollectKey = "ring_collect_last_ms"
+
+  static func heartSampleThroughIndex() -> Int {
+    let d = UserDefaults.standard
+    let today = Self.todayString()
+    if d.string(forKey: heartDayKey) != today { return -1 }
+    return d.integer(forKey: heartThroughKey)
+  }
+
+  static func setHeartSampleThroughIndex(_ index: Int) {
+    let d = UserDefaults.standard
+    d.set(Self.todayString(), forKey: heartDayKey)
+    d.set(index, forKey: heartThroughKey)
+  }
+
+  static func markCollected() {
+    UserDefaults.standard.set(
+      Int(Date().timeIntervalSince1970 * 1000),
+      forKey: lastCollectKey
+    )
+  }
+
+  static func lastCollectMs() -> Int {
+    UserDefaults.standard.integer(forKey: lastCollectKey)
+  }
+
+  private static let lastBatteryKey = "ring_collect_last_battery_ms"
+  private static let batteryIntervalMs = 3 * 60 * 1000
+
+  static func shouldCheckBattery(nowMs: Int = Int(Date().timeIntervalSince1970 * 1000)) -> Bool {
+    let last = UserDefaults.standard.integer(forKey: lastBatteryKey)
+    return last <= 0 || nowMs - last >= batteryIntervalMs
+  }
+
+  static func markBatteryChecked(nowMs: Int = Int(Date().timeIntervalSince1970 * 1000)) {
+    UserDefaults.standard.set(nowMs, forKey: lastBatteryKey)
+  }
+
+  private static func todayString() -> String {
+    let f = DateFormatter()
+    f.dateFormat = "yyyy-MM-dd"
+    f.timeZone = .current
+    return f.string(from: Date())
+  }
 }
 
 // iOS counterpart of android BleBridge focused on scan/connect + touch counter.
@@ -116,6 +195,11 @@ final class IosBleBridge: NSObject {
   private var pendingDisconnect: FlutterResult?
   private var pendingFreshReconnectPeripheral: CBPeripheral?
   private var connectTimeoutWork: DispatchWorkItem?
+  private var keepaliveTimer: Timer?
+  private var keepaliveConnectInFlight = false
+  private var keepaliveConnectCompletion: ((Bool) -> Void)?
+  private var backgroundCollectTimer: Timer?
+  private var backgroundCollectInFlight = false
 
   private var touchCount: Int = 0
   private var touchObserver: NSObjectProtocol?
@@ -145,6 +229,188 @@ final class IosBleBridge: NSObject {
       binaryMessenger: messenger
     )
     chargingLiveActivityChannel.setMethodCallHandler(handleChargingLiveActivity)
+
+    DispatchQueue.main.async { [weak self] in
+      self?.resumeKeepaliveIfNeeded()
+    }
+  }
+
+  // MARK: - Background connection keepalive (bluetooth-central)
+
+  /// 앱 종료·백그라운드에서도 BLE 연결을 유지·복구한다 (Android ForegroundService와 동일 목적).
+  func resumeKeepaliveIfNeeded() {
+    guard IosRingBackgroundPrefs.isEnabled else {
+      stopKeepaliveConnectionMaintenance()
+      return
+    }
+    _ = central
+    startKeepaliveConnectionMaintenance()
+    startBackgroundDataCollection()
+    ensureKeepaliveConnected()
+    Self.scheduleBackgroundSync()
+  }
+
+  private func startBackgroundDataCollection() {
+    backgroundCollectTimer?.invalidate()
+    backgroundCollectTimer = Timer.scheduledTimer(withTimeInterval: TimeInterval(IosRingMeasurementPolicy.appCollectIntervalSec), repeats: true) { [weak self] _ in
+      self?.collectHealthRecordsIfConnected(force: false)
+    }
+    if let timer = backgroundCollectTimer {
+      RunLoop.main.add(timer, forMode: .common)
+    }
+  }
+
+  private func stopBackgroundDataCollection() {
+    backgroundCollectTimer?.invalidate()
+    backgroundCollectTimer = nil
+  }
+
+  /// 연결된 상태에서 반지 저장소 → pending 큐 (Android collectAndQueue와 동일 목적).
+  private func collectHealthRecordsIfConnected(force: Bool) {
+    guard IosRingBackgroundPrefs.isEnabled,
+          !backgroundCollectInFlight,
+          connected?.state == .connected else { return }
+
+    let nowMs = Int(Date().timeIntervalSince1970 * 1000)
+    if !force && nowMs - IosRingCollectionWatermark.lastCollectMs() < IosRingMeasurementPolicy.minCollectGapMs {
+      return
+    }
+
+    backgroundCollectInFlight = true
+    collectPendingSamples { [weak self] in
+      self?.backgroundCollectInFlight = false
+      IosRingCollectionWatermark.markCollected()
+    }
+  }
+
+  private func startKeepaliveConnectionMaintenance() {
+    keepaliveTimer?.invalidate()
+    keepaliveTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+      self?.ensureKeepaliveConnected()
+      self?.checkBatteryStatusIfConnected(force: false)
+    }
+    if let timer = keepaliveTimer {
+      RunLoop.main.add(timer, forMode: .common)
+    }
+  }
+
+  private func stopKeepaliveConnectionMaintenance() {
+    keepaliveTimer?.invalidate()
+    keepaliveTimer = nil
+    stopBackgroundDataCollection()
+  }
+
+  private func ensureKeepaliveConnected() {
+    guard IosRingBackgroundPrefs.isEnabled,
+          pendingConnect == nil,
+          !keepaliveConnectInFlight,
+          central.state == .poweredOn,
+          let address = IosRingBackgroundPrefs.address,
+          let uuid = UUID(uuidString: address) else {
+      return
+    }
+
+    if let peripheral = connected, peripheral.state == .connected {
+      keepaliveConnectInFlight = true
+      QCSDKManager.shareInstance().add(peripheral) { [weak self] ok in
+        guard let self = self else { return }
+        self.keepaliveConnectInFlight = false
+        if !ok {
+          self.connectKeepalivePeripheral(uuid: uuid)
+        }
+      }
+      return
+    }
+
+    connectKeepalivePeripheral(uuid: uuid)
+  }
+
+  private func connectKeepalivePeripheral(uuid: UUID) {
+    guard !keepaliveConnectInFlight, pendingConnect == nil else { return }
+    guard let peripheral = resolveKnownPeripheral(uuid: uuid) else { return }
+
+    keepaliveConnectInFlight = true
+    peripherals[uuid] = peripheral
+    connected = peripheral
+    peripheral.delegate = self
+
+    let complete: (Bool) -> Void = { [weak self] ok in
+      guard let self = self else { return }
+      self.keepaliveConnectInFlight = false
+      self.keepaliveConnectCompletion = nil
+      if ok {
+        self.emit([
+          "type": "connected",
+          "address": peripheral.identifier.uuidString,
+          "name": peripheral.name ?? "",
+        ])
+        self.collectHealthRecordsIfConnected(force: true)
+        self.checkBatteryStatusIfConnected(force: true)
+      }
+    }
+
+    if peripheral.state == .connected {
+      QCSDKManager.shareInstance().add(peripheral) { [weak self] ok in
+        guard let self = self else { return }
+        if ok {
+          complete(true)
+        } else {
+          self.keepaliveConnectCompletion = complete
+          self.pendingFreshReconnectPeripheral = peripheral
+          QCSDKManager.shareInstance().removeAllPeripheral()
+          self.central.cancelPeripheralConnection(peripheral)
+        }
+      }
+      return
+    }
+
+    keepaliveConnectCompletion = complete
+    central.connect(peripheral, options: nil)
+
+    connectTimeoutWork?.cancel()
+    let work = DispatchWorkItem { [weak self] in
+      guard let self = self else { return }
+      self.keepaliveConnectInFlight = false
+      self.keepaliveConnectCompletion?(false)
+      self.keepaliveConnectCompletion = nil
+    }
+    connectTimeoutWork = work
+    DispatchQueue.main.asyncAfter(deadline: .now() + 60, execute: work)
+  }
+
+  private func scheduleKeepaliveReconnectAfterDisconnect() {
+    guard IosRingBackgroundPrefs.isEnabled, pendingDisconnect == nil else { return }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+      self?.ensureKeepaliveConnected()
+    }
+  }
+
+  /// 연결 유지 중 3분마다 배터리 %·충전 상태를 pending 큐에 적재한다.
+  private func checkBatteryStatusIfConnected(force: Bool) {
+    guard IosRingBackgroundPrefs.isEnabled,
+          connected?.state == .connected else { return }
+    if !force && !IosRingCollectionWatermark.shouldCheckBattery() { return }
+
+    QCSDKCmdCreator.readBatterySuccess({ [weak self] battery, charging in
+      guard let self = self else { return }
+      let level = Int(battery)
+      guard level > 0 else { return }
+
+      IosRingCollectionWatermark.markBatteryChecked()
+      let iso = ISO8601DateFormatter()
+      let collectedAt = iso.string(from: Date())
+      IosPendingHealthQueue.append([
+        "type": "battery",
+        "date": collectedAt,
+        "battery": level,
+        "level": level,
+        "charging": charging,
+      ])
+      self.maybeNotifyLowBattery(level)
+      if #available(iOS 16.2, *) {
+        RingChargingLiveActivityManager.sync(isCharging: charging, battery: level)
+      }
+    }, failed: {})
   }
 
   private func handleChargingLiveActivity(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -188,6 +454,17 @@ final class IosBleBridge: NSObject {
       enableSimpleTouchLogging(result: result)
     case "disableSimpleTouchLogging":
       disableSimpleTouchLogging(result: result)
+    case "setRingTouchMode":
+      let args = call.arguments as? [String: Any]
+      let appType = args?["appType"] as? Int ?? 0
+      let touchOn = args?["touchOn"] as? Bool ?? false
+      let strength = args?["strength"] as? Int ?? 1
+      setRingTouchMode(
+        appType: appType,
+        touchOn: touchOn,
+        strength: strength,
+        result: result
+      )
     case "getBatteryLevel":
       getBatteryLevel(result: result)
     case "syncTimeAndGetCoreFeatures":
@@ -200,7 +477,8 @@ final class IosBleBridge: NSObject {
       readHrSetting(result: result)
     case "writeHrSetting":
       let isEnable = (call.arguments as? [String: Any])?["isEnable"] as? Bool ?? false
-      let interval = (call.arguments as? [String: Any])?["interval"] as? Int ?? 30
+      let interval = (call.arguments as? [String: Any])?["interval"] as? Int
+        ?? IosRingMeasurementPolicy.ringAutoHeartIntervalMinutes
       writeHrSetting(isEnable: isEnable, interval: interval, result: result)
     case "readSpo2Setting":
       readSpo2Setting(result: result)
@@ -294,7 +572,7 @@ final class IosBleBridge: NSObject {
   private func handleForeground(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
     switch call.method {
     case "startService":
-      Self.scheduleBackgroundSync()
+      resumeKeepaliveIfNeeded()
       result(true)
     case "stopService":
       result(true)
@@ -310,16 +588,31 @@ final class IosBleBridge: NSObject {
       let address = args?["address"] as? String
       let name = args?["name"] as? String
       IosRingBackgroundPrefs.setKeepalive(enabled: true, address: address, name: name)
-      Self.scheduleBackgroundSync()
+      resumeKeepaliveIfNeeded()
       result(true)
     case "stopBackgroundKeepalive":
       IosRingBackgroundPrefs.setKeepalive(enabled: false, address: nil, name: nil)
+      stopKeepaliveConnectionMaintenance()
       result(true)
     case "fetchPendingHealthRecords":
       result(IosPendingHealthQueue.readAll())
     case "clearPendingHealthRecords":
       IosPendingHealthQueue.clear()
       result(true)
+    case "replacePendingHealthRecords":
+      let args = call.arguments as? [String: Any]
+      let raw = args?["records"] as? [[String: Any]] ?? []
+      IosPendingHealthQueue.replaceAll(raw)
+      result(true)
+    case "collectPendingHealthNow":
+      guard connected?.state == .connected else {
+        result(false)
+        return
+      }
+      collectPendingSamples {
+        IosRingCollectionWatermark.markCollected()
+        result(true)
+      }
     default:
       result(FlutterMethodNotImplemented)
     }
@@ -345,8 +638,19 @@ final class IosBleBridge: NSObject {
         completion(false)
         return
       }
-      self.collectPendingSamples {
-        completion(true)
+      let runCollect = {
+        self.collectPendingSamples {
+          IosRingCollectionWatermark.markCollected()
+          self.checkBatteryStatusIfConnected(force: true)
+          completion(true)
+        }
+      }
+      if let peripheral = self.connected {
+        QCSDKManager.shareInstance().add(peripheral) { _ in
+          runCollect()
+        }
+      } else {
+        runCollect()
       }
     }
 
@@ -374,8 +678,7 @@ final class IosBleBridge: NSObject {
   }
 
   private func maybeNotifyLowBattery(_ battery: Int) {
-    let enabled = UserDefaults.standard.bool(forKey: "flutter.battery_low_alert_enabled")
-    guard enabled else { return }
+    guard IosRingBackgroundAlertPrefs.isBatteryLowAlertEnabled else { return }
 
     if battery > 20 {
       if battery >= 25 { lastLowBatteryNotified = nil }
@@ -383,36 +686,51 @@ final class IosBleBridge: NSObject {
     }
     if let last = lastLowBatteryNotified, battery >= last { return }
 
-    let content = UNMutableNotificationContent()
-    content.title = "스마트링 배터리 부족"
-    content.body = "배터리가 \(battery)%입니다. 충전해 주세요."
-    content.sound = .default
+    UNUserNotificationCenter.current().getNotificationSettings { settings in
+      guard settings.authorizationStatus == .authorized ||
+            settings.authorizationStatus == .provisional ||
+            settings.authorizationStatus == .ephemeral else {
+        return
+      }
 
-    let request = UNNotificationRequest(
-      identifier: "battery_low_alert",
-      content: content,
-      trigger: nil
-    )
-    UNUserNotificationCenter.current().add(request)
-    lastLowBatteryNotified = battery
+      let content = UNMutableNotificationContent()
+      content.title = "스마트링 배터리 부족"
+      content.body = "배터리가 \(battery)%입니다. 충전해 주세요."
+      content.sound = .default
+
+      let request = UNNotificationRequest(
+        identifier: "battery_low_alert",
+        content: content,
+        trigger: nil
+      )
+      UNUserNotificationCenter.current().add(request)
+      DispatchQueue.main.async {
+        self.lastLowBatteryNotified = battery
+      }
+    }
   }
 
   private func collectPendingSamples(done: @escaping () -> Void) {
     let iso = ISO8601DateFormatter()
+    iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let isoFallback = ISO8601DateFormatter()
     let collectedAt = iso.string(from: Date())
-    let startOfDay = Calendar.current.startOfDay(for: Date())
-    var pending = 2
+    let calendar = Calendar.current
+    let startOfDay = calendar.startOfDay(for: Date())
+    var pending = 5
     let finish: () -> Void = {
       pending -= 1
       if pending <= 0 { done() }
     }
 
-    QCSDKCmdCreator.readBatterySuccess({ [weak self] battery, _ in
+    QCSDKCmdCreator.readBatterySuccess({ [weak self] battery, charging in
       let level = Int(battery)
       IosPendingHealthQueue.append([
         "type": "battery",
         "date": collectedAt,
         "battery": level,
+        "level": level,
+        "charging": charging,
       ])
       self?.maybeNotifyLowBattery(level)
       finish()
@@ -423,20 +741,198 @@ final class IosBleBridge: NSObject {
     QCSDKCmdCreator.getSchedualHeartRateData(with: [startOfDay], success: { models in
       if let model = models.first {
         let heartRates = model.heartRates.map { $0.intValue }
-        let interval = max(Int(model.secondInterval), 300)
+        let interval = max(Int(model.secondInterval), IosRingMeasurementPolicy.appCollectIntervalSec)
+        let through = IosRingCollectionWatermark.heartSampleThroughIndex()
+        var maxIndex = through
         for (i, bpm) in heartRates.enumerated() where bpm > 0 {
+          if i <= through { continue }
           let sampleDate = startOfDay.addingTimeInterval(TimeInterval(i * interval))
           IosPendingHealthQueue.append([
             "type": "heart_sample",
-            "date": iso.string(from: sampleDate),
+            "date": isoFallback.string(from: sampleDate),
             "bpm": bpm,
           ])
+          maxIndex = i
+        }
+        if maxIndex > through {
+          IosRingCollectionWatermark.setHeartSampleThroughIndex(maxIndex)
         }
       }
       finish()
     }, fail: {
       finish()
     })
+
+    self.queueBackgroundSpo2Samples(iso: isoFallback, calendar: calendar, finish: finish)
+    self.queueBackgroundStressSamples(iso: isoFallback, calendar: calendar, finish: finish)
+    self.queueBackgroundSportSlots(iso: isoFallback, calendar: calendar, finish: finish)
+  }
+
+  private func queueBackgroundSpo2Samples(
+    iso: ISO8601DateFormatter,
+    calendar: Calendar,
+    finish: @escaping () -> Void
+  ) {
+    let dayIndexes = [0, 1, 2]
+    var idx = 0
+
+    func fetchNext() {
+      guard idx < dayIndexes.count else {
+        finish()
+        return
+      }
+      let dayIndex = dayIndexes[idx]
+      idx += 1
+      QCSDKCmdCreator.getBloodOxygenData(byDayIndex: dayIndex) { data, _ in
+        if let list = data as? [QCBloodOxygenModel] {
+          var perDay: [Date: (min: [Int], max: [Int])] = [:]
+          for item in list {
+            guard let date = item.date else { continue }
+            let dayStart = calendar.startOfDay(for: date)
+            let hour = calendar.component(.hour, from: date)
+            var record = perDay[dayStart] ?? (
+              min: Array(repeating: 0, count: 24),
+              max: Array(repeating: 0, count: 24)
+            )
+            let vMin = Int(item.minSoa2)
+            let vMax = Int(item.maxSoa2)
+            let v = Int(item.soa2)
+            let minVal = vMin > 0 ? vMin : v
+            let maxVal = vMax > 0 ? vMax : v
+            if minVal > 0 {
+              if record.min[hour] == 0 || minVal < record.min[hour] {
+                record.min[hour] = minVal
+              }
+            }
+            if maxVal > 0, maxVal > record.max[hour] {
+              record.max[hour] = maxVal
+            }
+            perDay[dayStart] = record
+          }
+          for (dayStart, arrays) in perDay {
+            for hour in 0..<24 {
+              let candidate = arrays.max[hour] > 0 ? arrays.max[hour] :
+                (arrays.min[hour] > 0 ? arrays.min[hour] : 0)
+              if candidate <= 0 { continue }
+              let sampleDate = dayStart.addingTimeInterval(TimeInterval(hour * 3600))
+              IosPendingHealthQueue.append([
+                "type": "spo2_sample",
+                "date": iso.string(from: sampleDate),
+                "spo2": candidate,
+              ])
+            }
+          }
+        }
+        fetchNext()
+      }
+    }
+    fetchNext()
+  }
+
+  private func queueBackgroundStressSamples(
+    iso: ISO8601DateFormatter,
+    calendar: Calendar,
+    finish: @escaping () -> Void
+  ) {
+    let offsets = [0, 1, 2]
+    var idx = 0
+
+    func fetchNext() {
+      guard idx < offsets.count else {
+        finish()
+        return
+      }
+      let offset = offsets[idx]
+      idx += 1
+      QCSDKCmdCreator.getSchedualStressData(withDates: [NSNumber(value: offset)]) { data, _ in
+        if let list = data as? [QCStressModel], let model = list.first {
+          let rangeMin = max(Int(model.secondInterval) / 60, 1)
+          let stresses = model.stresses.map { $0.intValue }
+          let dayStart = calendar.startOfDay(
+            for: calendar.date(byAdding: .day, value: -offset, to: Date()) ?? Date()
+          )
+          let dayEnd = dayStart.addingTimeInterval(86400)
+          for (i, value) in stresses.enumerated() where value > 0 {
+            let sampleDate = dayStart.addingTimeInterval(TimeInterval(i * rangeMin * 60))
+            if sampleDate >= dayEnd { break }
+            IosPendingHealthQueue.append([
+              "type": "stress_sample",
+              "date": iso.string(from: sampleDate),
+              "stress": value,
+            ])
+          }
+        }
+        fetchNext()
+      }
+    }
+    fetchNext()
+  }
+
+  private func queueBackgroundSportSlots(
+    iso: ISO8601DateFormatter,
+    calendar: Calendar,
+    finish: @escaping () -> Void
+  ) {
+    let offsets = [0, 1, 2]
+    var idx = 0
+
+    func fetchNext() {
+      guard idx < offsets.count else {
+        finish()
+        return
+      }
+      let offset = offsets[idx]
+      idx += 1
+      QCSDKCmdCreator.getSportDetailData(
+        byDay: offset,
+        minuteInterval: 15,
+        begin: 0,
+        end: 95,
+        sportDatas: { sports in
+          let formatter = DateFormatter()
+          formatter.locale = Locale(identifier: "en_US_POSIX")
+          formatter.timeZone = TimeZone.current
+          formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+
+          for sport in sports {
+            guard let date = formatter.date(from: sport.happenDate) else { continue }
+            let comps = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: date)
+            guard let y = comps.year, let m = comps.month, let d = comps.day else { continue }
+            let hour = comps.hour ?? 0
+            let minute = comps.minute ?? 0
+            let timeIndex = ((hour * 60) + minute) / 15
+            let total = Int(sport.totalStepCount)
+            let run = Int(sport.runStepCount)
+            let walk = max(total - run, 0)
+            if walk <= 0 && run <= 0 { continue }
+
+            var slotComps = DateComponents()
+            slotComps.year = y
+            slotComps.month = m
+            slotComps.day = d
+            slotComps.hour = 0
+            slotComps.minute = 0
+            let dayStart = calendar.date(from: slotComps) ?? date
+            let slotDate = dayStart.addingTimeInterval(TimeInterval(timeIndex * 15 * 60))
+
+            IosPendingHealthQueue.append([
+              "type": "sport_slot",
+              "date": iso.string(from: slotDate),
+              "timeIndex": timeIndex,
+              "walkSteps": walk,
+              "runSteps": run,
+              "distance": Int(sport.distance),
+              "calorie": Int(sport.calories.rounded()),
+            ])
+          }
+          fetchNext()
+        },
+        fail: {
+          fetchNext()
+        }
+      )
+    }
+    fetchNext()
   }
 
   private func bluetoothStateString() -> String {
@@ -632,6 +1128,37 @@ final class IosBleBridge: NSObject {
     QCSDKCmdCreator.setTouch(offType, strength: 1, finshed: { error in
       if let err = error {
         result(FlutterError(code: "TOUCH_LOG_FAIL", message: err.localizedDescription, details: nil))
+      } else {
+        result(true)
+      }
+    })
+  }
+
+  private func setRingTouchMode(
+    appType: Int,
+    touchOn: Bool,
+    strength: Int,
+    result: @escaping FlutterResult
+  ) {
+    let typeRaw = touchOn ? appType : 0
+    guard let touchType = QCTouchGestureControlType(rawValue: typeRaw) else {
+      result(FlutterError(
+        code: "TOUCH_MODE_FAIL",
+        message: "invalid appType \(appType)",
+        details: nil
+      ))
+      return
+    }
+
+    touchLoggingActive = appType == 3 && touchOn
+
+    QCSDKCmdCreator.setTouch(touchType, strength: strength, finshed: { error in
+      if let err = error {
+        result(FlutterError(
+          code: "TOUCH_MODE_FAIL",
+          message: err.localizedDescription,
+          details: nil
+        ))
       } else {
         result(true)
       }
@@ -1616,6 +2143,9 @@ extension IosBleBridge: FlutterStreamHandler {
 // MARK: - CBCentralManagerDelegate
 extension IosBleBridge: CBCentralManagerDelegate {
   func centralManagerDidUpdateState(_ central: CBCentralManager) {
+    if central.state == .poweredOn {
+      resumeKeepaliveIfNeeded()
+    }
   }
 
   func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
@@ -1625,8 +2155,12 @@ extension IosBleBridge: CBCentralManagerDelegate {
         if peripheral.state == .connected {
           connected = peripheral
           peripheral.delegate = self
+          QCSDKManager.shareInstance().add(peripheral) { _ in }
         }
       }
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+      self?.resumeKeepaliveIfNeeded()
     }
   }
 
@@ -1656,7 +2190,10 @@ extension IosBleBridge: CBCentralManagerDelegate {
   }
 
   private func finishPendingConnect() {
+    connectTimeoutWork?.cancel()
+    connectTimeoutWork = nil
     pendingFreshReconnectPeripheral = nil
+    keepaliveConnectInFlight = false
     if let peripheral = connected {
       emit([
         "type": "connected",
@@ -1666,13 +2203,23 @@ extension IosBleBridge: CBCentralManagerDelegate {
     }
     pendingConnect?(true)
     pendingConnect = nil
+    keepaliveConnectCompletion?(true)
+    keepaliveConnectCompletion = nil
+    if IosRingBackgroundPrefs.isEnabled {
+      collectHealthRecordsIfConnected(force: true)
+      checkBatteryStatusIfConnected(force: true)
+    }
   }
 
   func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
     connectTimeoutWork?.cancel()
     connectTimeoutWork = nil
+    keepaliveConnectInFlight = false
     pendingConnect?(FlutterError(code: "CONNECT_FAIL", message: error?.localizedDescription, details: nil))
     pendingConnect = nil
+    keepaliveConnectCompletion?(false)
+    keepaliveConnectCompletion = nil
+    scheduleKeepaliveReconnectAfterDisconnect()
   }
 
   func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
@@ -1693,12 +2240,12 @@ extension IosBleBridge: CBCentralManagerDelegate {
       pendingDisconnect = nil
       return
     }
-    // 의도치 않은 끊김도 이벤트로 노출 가능
     emit([
       "type": "disconnected",
       "address": peripheral.identifier.uuidString,
       "error": error?.localizedDescription ?? ""
     ])
+    scheduleKeepaliveReconnectAfterDisconnect()
   }
 }
 

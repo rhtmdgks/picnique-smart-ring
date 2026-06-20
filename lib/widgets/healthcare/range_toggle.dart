@@ -53,12 +53,6 @@ class _RangeToggleState extends State<RangeToggle> {
             isSelected: widget.selectedRange == ToggleRange.halfYear,
             onTap: () => widget.onChanged(ToggleRange.halfYear),
           ),
-          SizedBox(width: 8),
-          RangeToggleButton(
-            range: ToggleRange.year,
-            isSelected: widget.selectedRange == ToggleRange.year,
-            onTap: () => widget.onChanged(ToggleRange.year),
-          ),
         ],
       ),
     );

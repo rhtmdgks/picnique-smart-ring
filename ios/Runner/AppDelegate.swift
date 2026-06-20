@@ -25,7 +25,13 @@ import BackgroundTasks
     DispatchQueue.main.async { [weak self] in
       guard self?.bleBridge == nil else { return }
       self?.bleBridge = IosBleBridge(messenger: messenger)
+      self?.bleBridge?.resumeKeepaliveIfNeeded()
     }
+  }
+
+  override func applicationDidBecomeActive(_ application: UIApplication) {
+    bleBridge?.resumeKeepaliveIfNeeded()
+    super.applicationDidBecomeActive(application)
   }
 
   private func handleRingBackgroundSync(task: BGAppRefreshTask) {

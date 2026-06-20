@@ -20,6 +20,10 @@ import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
 import android.net.Uri
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : FlutterActivity() {
     companion object {
@@ -93,7 +97,8 @@ class MainActivity : FlutterActivity() {
                     "readHrSetting" -> bridge.readHrSetting(result)
                     "writeHrSetting" -> bridge.writeHrSetting(
                         isEnable = call.argument<Boolean>("isEnable") ?: false,
-                        interval = call.argument<Int>("interval") ?: 30,
+                        interval = call.argument<Int>("interval")
+                            ?: RingMeasurementPolicy.RING_AUTO_HEART_INTERVAL_MINUTES,
                         result = result
                     )
                     "readSpo2Setting" -> bridge.readSpo2Setting(result)
@@ -243,6 +248,34 @@ class MainActivity : FlutterActivity() {
                     "clearPendingHealthRecords" -> {
                         PendingHealthQueue.clear(this)
                         result.success(true)
+                    }
+                    "replacePendingHealthRecords" -> {
+                        @Suppress("UNCHECKED_CAST")
+                        val records = call.argument<List<Map<String, Any?>>>("records")
+                            ?: emptyList()
+                        PendingHealthQueue.replaceAll(this, records)
+                        result.success(true)
+                    }
+                    "collectPendingHealthNow" -> {
+                        CoroutineScope(Dispatchers.IO).launch {
+                            try {
+                                val address = RingBackgroundPrefs.ringAddress(this@MainActivity)
+                                if (!address.isNullOrBlank()) {
+                                    if (bridge.ensureConnected(address)) {
+                                        bridge.collectAndQueue(this@MainActivity)
+                                    }
+                                }
+                                withContext(Dispatchers.Main) { result.success(true) }
+                            } catch (t: Throwable) {
+                                withContext(Dispatchers.Main) {
+                                    result.error(
+                                        "COLLECT_FAIL",
+                                        t.message,
+                                        null,
+                                    )
+                                }
+                            }
+                        }
                     }
                     else -> result.notImplemented()
                 }

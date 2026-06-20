@@ -5,7 +5,7 @@ import 'package:picnique_rosary_healthcare_smartring/core/enum/bar.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/enum/toggle_range.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/graph/stacked_bar/_atomic/stacked_bar_graph.dart';
 
-/// Sleep week/month/halfYear/year stacked bars — themed wrapper.
+/// Sleep week/month/3-month stacked bars — themed wrapper.
 class HealthSleepStackedChart extends StatelessWidget {
   final ToggleRange range;
   final String unit;
@@ -27,8 +27,7 @@ class HealthSleepStackedChart extends StatelessWidget {
     final (windowX, intervalX, unitX) = switch (range) {
       ToggleRange.week => (7, 1, UnitX.day),
       ToggleRange.month => (30, 4, UnitX.day),
-      ToggleRange.halfYear => (6, 1, UnitX.month),
-      ToggleRange.year => (12, 2, UnitX.month),
+      ToggleRange.halfYear => (3, 1, UnitX.month),
       ToggleRange.day => (1, 1, UnitX.day),
     };
 

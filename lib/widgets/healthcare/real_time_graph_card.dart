@@ -18,6 +18,8 @@ import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/charts/h
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/charts/health_sleep_stacked_chart.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/range_toggle.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/db/db_manager.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/health_data_refresh_notifier.dart';
+import 'package:provider/provider.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/charts/health_chart_theme.dart';
 import 'package:drift/drift.dart' hide Column;
 
@@ -278,8 +280,7 @@ Future<_GraphData> _loadGraphDataFromDb(
     ToggleRange.day => 1,
     ToggleRange.week => 7,
     ToggleRange.month => 30,
-    ToggleRange.halfYear => 180,
-    ToggleRange.year => 365,
+    ToggleRange.halfYear => 90,
   };
   log('load start | range=$r, days=$days, anchorDate=$anchorDate');
 
@@ -392,10 +393,10 @@ Future<_GraphData> _loadGraphDataFromDb(
     'daily days=${daily.length}${daily.isNotEmpty ? ', sample=${daily.take(3).map((d) => '${_day0(d.date)}(${d.sleep.length})').join(', ')}' : ''}',
   );
 
-  // 반년/연간 그래프용: 월 인덱스 기반 SleepMonthData (빈 달도 포함)
+  // 3개월 그래프용: 월 인덱스 기반 SleepMonthData (빈 달도 포함)
   final monthLike = <SleepMonthData>[];
-  if (r == ToggleRange.halfYear || r == ToggleRange.year) {
-    final monthsCount = r == ToggleRange.halfYear ? 6 : 12;
+  if (r == ToggleRange.halfYear) {
+    const monthsCount = 3;
     final lastMonth = DateTime(lastDay0.year, lastDay0.month, 1);
     final oldestMonthStart = DateTime(
       lastMonth.year,
@@ -647,6 +648,8 @@ class _RealTimeGraphCardState extends State<RealTimeGraphCard> {
 
   String windowXLabel = '';
 
+  HealthDataRefreshNotifier? _healthRefresh;
+
   @override
   void initState() {
     super.initState();
@@ -673,6 +676,28 @@ class _RealTimeGraphCardState extends State<RealTimeGraphCard> {
     } else {
       windowXLabel = _rangeLabel(widget.selectedRange);
     }
+    WidgetsBinding.instance.addPostFrameCallback((_) => _attachHealthRefresh());
+  }
+
+  void _attachHealthRefresh() {
+    if (!mounted) return;
+    final next = context.read<HealthDataRefreshNotifier>();
+    if (identical(_healthRefresh, next)) return;
+    _healthRefresh?.removeListener(_onHealthDataChanged);
+    _healthRefresh = next;
+    _healthRefresh!.addListener(_onHealthDataChanged);
+  }
+
+  void _onHealthDataChanged() {
+    if (_healthRefresh?.affects(widget.dataType) ?? false) {
+      refreshDB(anchor: selectedDate);
+    }
+  }
+
+  @override
+  void dispose() {
+    _healthRefresh?.removeListener(_onHealthDataChanged);
+    super.dispose();
   }
 
   @override
@@ -688,12 +713,7 @@ class _RealTimeGraphCardState extends State<RealTimeGraphCard> {
       case ToggleRange.halfYear:
         {
           final lastMonth = DateTime(anchor.year, anchor.month, 1);
-          return DateTime(lastMonth.year, lastMonth.month - 5, 1);
-        }
-      case ToggleRange.year:
-        {
-          final lastMonth = DateTime(anchor.year, anchor.month, 1);
-          return DateTime(lastMonth.year, lastMonth.month - 11, 1);
+          return DateTime(lastMonth.year, lastMonth.month - 2, 1);
         }
       case ToggleRange.day:
       case ToggleRange.week:
@@ -739,10 +759,7 @@ class _RealTimeGraphCardState extends State<RealTimeGraphCard> {
           _dotGroups = await _fetchDailyAggregates(days: 30);
           break;
         case ToggleRange.halfYear:
-          _dotGroups = await _fetchMonthlyAggregates(months: 6);
-          break;
-        case ToggleRange.year:
-          _dotGroups = await _fetchMonthlyAggregates(months: 12);
+          _dotGroups = await _fetchMonthlyAggregates(months: 3);
           break;
       }
     } catch (_) {
@@ -795,7 +812,6 @@ class _RealTimeGraphCardState extends State<RealTimeGraphCard> {
           );
           break;
         case ToggleRange.halfYear:
-        case ToggleRange.year:
           barData = await fetchMonthlyBarGroups(
             endDate: endDate,
             dataType: widget.dataType,
@@ -1125,32 +1141,12 @@ class _RealTimeGraphCardState extends State<RealTimeGraphCard> {
           _monthBaseStart ??= base;
           final data = _buildMonthlySleepAverageBars(
             daily: gd.daily,
-            months: 6,
+            months: 3,
             anchor: anchor,
             width: 16,
           );
           return HealthSleepStackedChart(
             range: ToggleRange.halfYear,
-            unit: widget.unit,
-            intervalYFunc: widget.intervalYFunc,
-            data: data,
-            monthBaseStart: _monthBaseStart!,
-          );
-        }
-
-      case ToggleRange.year:
-        {
-          final anchor = _stackedAnchor ?? selectedDate;
-          final base = _calcMonthBaseStart(anchor, widget.selectedRange);
-          _monthBaseStart ??= base;
-          final data = _buildMonthlySleepAverageBars(
-            daily: gd.daily,
-            months: 12,
-            anchor: anchor,
-            width: 8,
-          );
-          return HealthSleepStackedChart(
-            range: ToggleRange.year,
             unit: widget.unit,
             intervalYFunc: widget.intervalYFunc,
             data: data,
@@ -1173,7 +1169,6 @@ class _RealTimeGraphCardState extends State<RealTimeGraphCard> {
       minX: useFullDayAxis ? 0 : null,
       maxX: useFullDayAxis ? (slotCount - 1).toDouble() : null,
       dayAnchor: useFullDayAxis ? selectedDate : null,
-      referenceLineY: widget.dataType == DataType.Oxygen ? 95.0 : null,
     );
   }
 
@@ -1205,7 +1200,6 @@ class _RealTimeGraphCardState extends State<RealTimeGraphCard> {
         return;
 
       case ToggleRange.halfYear:
-      case ToggleRange.year:
         {
           final endMonthX = barData.first.x - 1;
           final endDate = DateTime(
@@ -1281,7 +1275,7 @@ class _RealTimeGraphCardState extends State<RealTimeGraphCard> {
       case ToggleRange.day:
         {
           final s = _startOfDay(selectedDate);
-          return "${_fmtMD(s)} 00:00 ~ 23:59";
+          return _fmtMD(s);
         }
       case ToggleRange.week:
         {
@@ -1300,20 +1294,9 @@ class _RealTimeGraphCardState extends State<RealTimeGraphCard> {
           final curMonth = DateTime(now.year, now.month, 1);
           final start = DateTime(
             curMonth.year,
-            curMonth.month - 5,
+            curMonth.month - 2,
             1,
-          ); // 최근 6개월
-          final end = DateTime(curMonth.year, curMonth.month + 1, 0); // 이번달 말일
-          return "${_fmtYM(start)} ~ ${_fmtYM(end)}";
-        }
-      case ToggleRange.year:
-        {
-          final curMonth = DateTime(now.year, now.month, 1);
-          final start = DateTime(
-            curMonth.year,
-            curMonth.month - 11,
-            1,
-          ); // 최근 12개월
+          ); // 최근 3개월
           final end = DateTime(curMonth.year, curMonth.month + 1, 0); // 이번달 말일
           return "${_fmtYM(start)} ~ ${_fmtYM(end)}";
         }

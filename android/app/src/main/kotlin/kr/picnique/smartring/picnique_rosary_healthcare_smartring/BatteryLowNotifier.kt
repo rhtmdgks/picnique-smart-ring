@@ -9,8 +9,6 @@ import androidx.core.app.NotificationCompat
 object BatteryLowNotifier {
     private const val CHANNEL_ID = "battery_low_alert"
     private const val NOTIFICATION_ID = 1001
-    private const val PREFS = "FlutterSharedPreferences"
-    private const val ENABLED_KEY = "flutter.battery_low_alert_enabled"
 
     private var lastNotifiedLevel: Int? = null
 
@@ -27,9 +25,12 @@ object BatteryLowNotifier {
     }
 
     fun maybeNotify(context: Context, battery: Int) {
-        val enabled = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getBoolean(ENABLED_KEY, false)
-        if (!enabled) return
+        if (!RingBackgroundAlertPrefs.isBatteryLowAlertEnabled(context)) return
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val manager = context.getSystemService(NotificationManager::class.java)
+            if (!manager.areNotificationsEnabled()) return
+        }
 
         if (battery > 20) {
             if (battery >= 25) lastNotifiedLevel = null

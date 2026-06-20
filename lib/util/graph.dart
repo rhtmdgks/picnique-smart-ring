@@ -808,10 +808,7 @@ int getWindowX(ToggleRange range, DataType dataType) {
       return 31;
 
     case ToggleRange.halfYear:
-      return 6;
-
-    case ToggleRange.year:
-      return 12;
+      return 3;
   }
 }
 
@@ -840,9 +837,6 @@ double getBarWidth(ToggleRange range, DataType dataType) {
 
     case ToggleRange.halfYear:
       return 16;
-
-    case ToggleRange.year:
-      return 8;
   }
 }
 
@@ -871,9 +865,6 @@ UnitX getUnitX(ToggleRange range, DataType dataType) {
 
     case ToggleRange.halfYear:
       return UnitX.month;
-
-    case ToggleRange.year:
-      return UnitX.month;
   }
 }
 
@@ -894,26 +885,24 @@ String getWindowXLabel(
 
   switch (range) {
     case ToggleRange.day:
-      // 1일 뷰: 해당 날짜 00:00 ~ 23:59 로 통일
-      return "${fmtMD(start)} 00:00 ~ 23:59";
+      // 1일 뷰: 해당 날짜만 표시
+      return fmtMD(start);
     case ToggleRange.week:
     case ToggleRange.month:
       end = start.add(Duration(days: index));
       break;
     case ToggleRange.halfYear:
-    case ToggleRange.year:
       end = DateTime(start.year, start.month + index);
       break;
   }
 
   switch (range) {
     case ToggleRange.day:
-      return "${fmtMD(start)} 00:00 ~ 23:59";
+      return fmtMD(start);
     case ToggleRange.week:
     case ToggleRange.month:
       return "${fmtYMD(start)} ~ ${fmtYMD(end)}";
     case ToggleRange.halfYear:
-    case ToggleRange.year:
       return "${fmtYM(start)} ~ ${fmtYM(end)}";
   }
 }

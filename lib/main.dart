@@ -22,6 +22,7 @@ import 'package:picnique_rosary_healthcare_smartring/screens/sub/health_care_oxy
 import 'package:picnique_rosary_healthcare_smartring/screens/sub/health_care_sleep_screen.dart';
 import 'package:picnique_rosary_healthcare_smartring/screens/sub/health_care_stress_screen.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/battery_notification_service.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/health_data_refresh_notifier.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_background_sync.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_live_activity.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/health_live_metrics.dart';
@@ -58,6 +59,7 @@ void main() async {
         ChangeNotifierProvider(create: (_) => RingSyncController()),
         ChangeNotifierProvider(create: (_) => RingLiveActivity()),
         ChangeNotifierProvider(create: (_) => HealthLiveMetrics()),
+        ChangeNotifierProvider(create: (_) => HealthDataRefreshNotifier()),
       ],
       child: const MyApp(),
     ),

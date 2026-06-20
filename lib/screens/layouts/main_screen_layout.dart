@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/data/tab_item.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/ring.dart';
 import 'package:picnique_rosary_healthcare_smartring/screens/layouts/background_layout.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/health_data_refresh_notifier.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_background_sync.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_connection_coordinator.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_pending_import.dart';
@@ -41,6 +42,7 @@ class _MainScreenLayoutState extends State<MainScreenLayout>
       ring: context.read<Ring>(),
       liveActivity: context.read<RingLiveActivity>(),
       sync: context.read<RingSyncController>(),
+      healthRefresh: context.read<HealthDataRefreshNotifier>(),
     );
   }
 
@@ -53,7 +55,9 @@ class _MainScreenLayoutState extends State<MainScreenLayout>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      unawaited(RingPendingImport.importAll());
+      unawaited(RingPendingImport.importAll(
+        refreshNotifier: context.read<HealthDataRefreshNotifier>(),
+      ));
     }
   }
 

@@ -6,10 +6,14 @@ import 'package:flutter/services.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/ring.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ble_command_queue.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/battery_notification_service.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/ring_background_import_scheduler.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_background_keepalive.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_background_sync.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_connection_service.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_live_activity.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/health_data_refresh_notifier.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/ring_health_accumulation.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_pending_import.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_touch_mode_service.dart';
 import 'package:picnique_rosary_healthcare_smartring/util/BLEUtil.dart';
@@ -39,31 +43,49 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
   bool _manualDisconnectRequested = false;
   bool _postConnectInFlight = false;
   int _backoffIndex = 0;
+  HealthDataRefreshNotifier? _healthRefresh;
+
+  HealthDataRefreshNotifier? get healthRefresh => _healthRefresh;
 
   Future<void> start({
     required Ring ring,
     RingLiveActivity? liveActivity,
     RingSyncController? sync,
+    HealthDataRefreshNotifier? healthRefresh,
   }) async {
     _ring = ring;
     _liveActivity = liveActivity;
     _sync = sync;
+    _healthRefresh = healthRefresh;
     if (_started) return;
     _started = true;
     WidgetsBinding.instance.addObserver(this);
     await ring.loadFromPrefs();
+    RingBackgroundImportScheduler.instance.bind(
+      ring,
+      refreshNotifier: healthRefresh,
+    );
+    if (ring.hasSavedDevice) {
+      await BatteryNotificationService.ensureReadyForBackgroundAlerts();
+    }
+    ring.addListener(_onRingProviderChanged);
     _eventSub = _events.receiveBroadcastStream().listen(
       _onEvent,
       onError: (Object err) =>
           debugPrint('[BLE][coordinator] event error: $err'),
     );
-    await RingPendingImport.importAll();
+    await RingPendingImport.importAll(
+      ring: _ring,
+      refreshNotifier: _healthRefresh,
+    );
     unawaited(_tryReconnect(trigger: 'startup'));
   }
 
   Future<void> stop() async {
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
+    _ring?.removeListener(_onRingProviderChanged);
+    RingBackgroundImportScheduler.instance.unbind();
     WidgetsBinding.instance.removeObserver(this);
     await _eventSub?.cancel();
     _eventSub = null;
@@ -88,9 +110,28 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      unawaited(RingPendingImport.importAll());
+      unawaited(_flushHealthIfConnected());
       unawaited(_tryReconnect(trigger: 'resume'));
+    } else if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive) {
+      unawaited(RingPendingImport.importAll(
+        ring: _ring,
+        refreshNotifier: _healthRefresh,
+      ));
     }
+  }
+
+  Future<void> _flushHealthIfConnected() async {
+    final ring = _ring;
+    if (ring == null || !ring.isConnected || !ring.sdkReady) return;
+    await RingHealthAccumulation.flushConnectedToApp(
+      ring: ring,
+      refreshNotifier: _healthRefresh,
+    );
+  }
+
+  void _onRingProviderChanged() {
+    RingBackgroundImportScheduler.instance.onRingStateChanged();
   }
 
   void _onEvent(dynamic event) {
@@ -243,6 +284,7 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
       sdkReady = await RingConnectionService.syncTimeAfterConnect();
     }
     ring.setSdkReady(sdkReady);
+    RingBackgroundImportScheduler.instance.onRingStateChanged();
 
     if (!sdkReady) {
       debugPrint('[CONNECT] SDK not ready — skip post-connect setup');
@@ -260,16 +302,25 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
       await BleCommandQueue.invoke('enableRealtimeNotifications');
     } catch (_) {}
 
+    // 반지 펌웨어 자동 측정(끊김 시 내부 메모리 축적)을 먼저 기록한다.
+    await enableRingAutoMonitoring();
+
     try {
       await _fg.invokeMethod('startService');
     } catch (_) {}
 
     await RingBackgroundKeepalive.start(address: address, name: name);
+    await BatteryNotificationService.ensureReadyForBackgroundAlerts();
 
     if (Platform.isIOS) {
       await Future<void>.delayed(const Duration(seconds: 1));
     }
-    await enableRingAutoMonitoring();
+
+    // 재연결·연결 직후: 반지 내부 저장분 → 앱 DB
+    await RingHealthAccumulation.flushConnectedToApp(
+      ring: ring,
+      refreshNotifier: _healthRefresh,
+    );
 
     final sync = _sync;
     if (sync != null && !Platform.isIOS) {

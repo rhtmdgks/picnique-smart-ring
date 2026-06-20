@@ -5,6 +5,10 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/ring.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ble_command_queue.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/battery_notification_service.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/health_data_refresh_notifier.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/ring_connection_coordinator.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/ring_health_accumulation.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_background_keepalive.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_background_sync.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_live_activity.dart';
@@ -116,11 +120,18 @@ class RingConnectionService {
         await fgChannel.invokeMethod('startService');
       } catch (_) {}
 
+      await enableRingAutoMonitoring();
+
       await RingBackgroundKeepalive.start(
         address: address,
         name: deviceName,
       );
-      await enableRingAutoMonitoring();
+      await BatteryNotificationService.ensureReadyForBackgroundAlerts();
+      await RingHealthAccumulation.flushConnectedToApp(
+        ring: ring,
+        refreshNotifier:
+            RingConnectionCoordinator.instance.healthRefresh,
+      );
       debugPrint('[CONNECT] done');
 
       if (runBackgroundSync && sync != null && !Platform.isIOS) {

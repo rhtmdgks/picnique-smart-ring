@@ -34,4 +34,14 @@ object PendingHealthQueue {
         val file = File(context.filesDir, FILE)
         if (file.exists()) file.delete()
     }
+
+    fun replaceAll(context: Context, records: List<Map<String, Any?>>) {
+        val file = File(context.filesDir, FILE)
+        if (records.isEmpty()) {
+            clear(context)
+            return
+        }
+        val text = records.joinToString("\n") { gson.toJson(it) } + "\n"
+        file.writeText(text)
+    }
 }

@@ -19,8 +19,7 @@ class RangeToggleButton extends StatelessWidget {
     ToggleRange.day => "1일",
     ToggleRange.week => "1주",
     ToggleRange.month => "1개월",
-    ToggleRange.halfYear => "6개월",
-    ToggleRange.year => "1년",
+    ToggleRange.halfYear => "3개월",
   };
 
   @override

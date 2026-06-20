@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:drift/drift.dart' hide Column;
+import 'package:picnique_rosary_healthcare_smartring/core/charts/health_chart_theme.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/constants/colors.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/constants/fonts.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/enum/bar.dart';
@@ -13,6 +16,7 @@ import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/health_m
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/real_time_card.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/charts/health_chart_card.dart';
 import 'package:provider/provider.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/health_data_refresh_notifier.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/health_live_metrics.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/sub_app_bar.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/db/db_manager.dart';
@@ -38,9 +42,9 @@ class _HealthCareOxygenScreenState extends State<HealthCareOxygenScreen> {
   String _latestLabel = "-";
   String _latestValueText = "-";
   bool _latestLoading = false;
-  int _chartRefreshKey = 0;
 
   final platform = const MethodChannel('com.example.picnique_ring/ble');
+  HealthDataRefreshNotifier? _healthRefresh;
 
   /// 날짜/범위와 무관하게 한 번만 로드해 유지
   late final Future<String> _healthMessageFuture =
@@ -53,6 +57,56 @@ class _HealthCareOxygenScreenState extends State<HealthCareOxygenScreen> {
   void initState() {
     super.initState();
     _loadLatestOxygen();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final nextRefresh = context.read<HealthDataRefreshNotifier>();
+    if (!identical(_healthRefresh, nextRefresh)) {
+      _healthRefresh?.removeListener(_onHealthDataRefresh);
+      _healthRefresh = nextRefresh;
+      _healthRefresh!.addListener(_onHealthDataRefresh);
+    }
+  }
+
+  @override
+  void dispose() {
+    _healthRefresh?.removeListener(_onHealthDataRefresh);
+    super.dispose();
+  }
+
+  void _onHealthDataRefresh() {
+    if (_healthRefresh?.affects(DataType.Oxygen) ?? false) {
+      unawaited(_reloadLatestFromDb());
+    }
+  }
+
+  Future<void> _reloadLatestFromDb() async {
+    try {
+      final db = DbManager.I.heartDB;
+      final q = db.select(db.bloodOxygenDetails)
+        ..where((t) => t.spo2.isBiggerThanValue(0))
+        ..orderBy([
+          (t) => OrderingTerm(expression: t.date, mode: OrderingMode.desc),
+        ])
+        ..limit(1);
+
+      final rows = await q.get();
+      if (!mounted) return;
+      if (rows.isEmpty) {
+        setState(() {
+          _latestLabel = '데이터 없음';
+          _latestValueText = '-';
+        });
+        return;
+      }
+      final r = rows.first;
+      setState(() {
+        _latestValueText = r.spo2.toString();
+        _latestLabel = _formatAgo(DateTime.now().difference(r.date));
+      });
+    } catch (_) {}
   }
 
   String _formatAgo(Duration d) {
@@ -103,18 +157,20 @@ class _HealthCareOxygenScreenState extends State<HealthCareOxygenScreen> {
   }
 
   Future<void> _onManualMeasureSuccess(Map<dynamic, dynamic> result) async {
-    final value = await persistManualMeasurement(
+    await persistManualMeasurement(
       dataType: DataType.Oxygen,
       result: result,
       metrics: context.read<HealthLiveMetrics>(),
+      refreshNotifier: context.read<HealthDataRefreshNotifier>(),
     );
-    if (!mounted || value == null) return;
-    setState(() {
-      _latestValueText = value.toString();
-      _latestLabel = '방금 전';
-      _latestLoading = false;
-      _chartRefreshKey++;
-    });
+  }
+
+  Color _latestValueColor() {
+    final v = int.tryParse(_latestValueText);
+    if (v == null) return Colors.white;
+    if (v < HealthChartTheme.oxygenDangerThreshold) return AppColors.StressRed;
+    if (v < 90) return AppColors.StressOrange;
+    return Colors.white;
   }
 
   @override
@@ -138,7 +194,7 @@ class _HealthCareOxygenScreenState extends State<HealthCareOxygenScreen> {
                       Text(
                         _latestValueText,
                         style: TextStyle(
-                          color: Colors.white,
+                          color: _latestValueColor(),
                           fontSize: 20,
                           fontWeight: AppFontWeight.semiBold,
                         ),
@@ -174,7 +230,6 @@ class _HealthCareOxygenScreenState extends State<HealthCareOxygenScreen> {
                 ),
                 const SizedBox(height: 16),
                 HealthChartCard(
-                  key: ValueKey(_chartRefreshKey),
                   unit: unit,
                   selectedRange: _selectedRange,
                   onChanged: (range) => setState(() => _selectedRange = range),
@@ -182,10 +237,57 @@ class _HealthCareOxygenScreenState extends State<HealthCareOxygenScreen> {
                   intervalYFunc: calculateIntervalY,
                   dataType: DataType.Oxygen,
                 ),
+                const SizedBox(height: 8),
+                _OxygenChartLegend(),
               ],
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _OxygenChartLegend extends StatelessWidget {
+  const _OxygenChartLegend();
+
+  @override
+  Widget build(BuildContext context) {
+    Widget item(Color color, String label) {
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 10,
+            height: 10,
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.85),
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: TextStyle(
+              color: AppColors.lightGray,
+              fontSize: 12,
+              fontWeight: AppFontWeight.regular,
+            ),
+          ),
+        ],
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      child: Wrap(
+        spacing: 16,
+        runSpacing: 8,
+        children: [
+          item(AppColors.StressRed, '80% 미만 · 주의'),
+          item(AppColors.StressOrange, '80–89%'),
+          item(const Color(0xFF5AC8FA), '90% 이상'),
+        ],
       ),
     );
   }

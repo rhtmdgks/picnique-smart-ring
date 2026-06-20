@@ -34,8 +34,7 @@ String heartRatePeriodLabel(ToggleRange range) {
     ToggleRange.day => '오늘',
     ToggleRange.week => '이번 주',
     ToggleRange.month => '이번 달',
-    ToggleRange.halfYear => '최근 6개월',
-    ToggleRange.year => '최근 1년',
+    ToggleRange.halfYear => '최근 3개월',
   };
 }
 
@@ -52,11 +51,7 @@ Future<HeartRateRangeStats> getHeartRateRangeStatsFromDb(
     ToggleRange.month => todayStart.subtract(const Duration(days: 29)),
     ToggleRange.halfYear => () {
       final curMonth = DateTime(now.year, now.month, 1);
-      return DateTime(curMonth.year, curMonth.month - 5, 1);
-    }(),
-    ToggleRange.year => () {
-      final curMonth = DateTime(now.year, now.month, 1);
-      return DateTime(curMonth.year, curMonth.month - 11, 1);
+      return DateTime(curMonth.year, curMonth.month - 2, 1);
     }(),
   };
 

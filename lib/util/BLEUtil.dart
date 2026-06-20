@@ -16,6 +16,9 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:url_launcher/url_launcher.dart'; // pubspec에 추가 필요
 import 'package:picnique_rosary_healthcare_smartring/core/enum/data_type.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/db/db_manager.dart';
+import 'package:picnique_rosary_healthcare_smartring/core/constants/ring_measurement_policy.dart';
+import 'package:picnique_rosary_healthcare_smartring/core/enum/data_type.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/health_data_refresh_notifier.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ble_command_queue.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/health_live_metrics.dart';
 
@@ -176,11 +179,14 @@ Future<bool> isBluetoothReady({
   }
 }
 
-/// 반지 자동 측정(심박·산소·스트레스)을 켠다. 백그라운드 수집 전제.
+/// 반지 자동 측정(심박·산소·스트레스)을 켠다.
+///
+/// 연결이 끊기거나 앱이 종료되어도 반지 내부 메모리에 측정값이 쌓이도록
+/// 펌웨어 설정을 기록한다. SpO₂·스트레스 간격은 SDK가 on/off만 제공한다.
 Future<void> enableRingAutoMonitoring({
   MethodChannel platform = _blePlatformChannel,
 }) async {
-  const hrInterval = 30;
+  const hrInterval = RingMeasurementPolicy.ringAutoHeartIntervalMinutes;
   try {
     await _bleInvoke('writeHrSetting', {
       'isEnable': true,
@@ -245,7 +251,7 @@ Future<void> printAndEnableAllSettings(MethodChannel platform) async {
   }
 
   // 2) 모두 ON 시도
-  final hrInterval = 5;
+  final hrInterval = RingMeasurementPolicy.ringAutoHeartIntervalMinutes;
 
   try {
     await _bleInvoke('writeHrSetting', {
@@ -1042,6 +1048,7 @@ Future<int?> persistManualMeasurement({
   required DataType dataType,
   required Map<dynamic, dynamic> result,
   HealthLiveMetrics? metrics,
+  HealthDataRefreshNotifier? refreshNotifier,
 }) async {
   final now = DateTime.now();
   final db = DbManager.I.heartDB;
@@ -1072,6 +1079,9 @@ Future<int?> persistManualMeasurement({
   }
 
   metrics?.record(dataType, saved);
+  if (saved != null) {
+    refreshNotifier?.notifyChanged(dataType);
+  }
   return saved;
 }
 

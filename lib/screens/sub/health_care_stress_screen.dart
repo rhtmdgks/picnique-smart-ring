@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:drift/drift.dart' hide Column;
@@ -13,6 +15,7 @@ import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/real_tim
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/charts/health_chart_card.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/stress_hrv_messages.dart';
 import 'package:provider/provider.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/health_data_refresh_notifier.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/health_live_metrics.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/sub_app_bar.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/db/db_manager.dart';
@@ -40,16 +43,38 @@ class _HealthCareStressScreenState extends State<HealthCareStressScreen> {
   String get unit => stressToLabel((_latestStress ?? 0).toDouble());
 
   final platform = const MethodChannel('com.example.picnique_ring/ble');
+  HealthDataRefreshNotifier? _healthRefresh;
 
   late final Future<StressHrvMessageResult> _healthMessageFuture =
       buildStressHrvMessages();
-
-  int _chartRefreshKey = 0;
 
   @override
   void initState() {
     super.initState();
     _loadLatestStress();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final nextRefresh = context.read<HealthDataRefreshNotifier>();
+    if (!identical(_healthRefresh, nextRefresh)) {
+      _healthRefresh?.removeListener(_onHealthDataRefresh);
+      _healthRefresh = nextRefresh;
+      _healthRefresh!.addListener(_onHealthDataRefresh);
+    }
+  }
+
+  @override
+  void dispose() {
+    _healthRefresh?.removeListener(_onHealthDataRefresh);
+    super.dispose();
+  }
+
+  void _onHealthDataRefresh() {
+    if (_healthRefresh?.affects(DataType.Stress) ?? false) {
+      unawaited(_loadLatestStress(skipSync: true));
+    }
   }
 
   // "방금 전 / N분 전 / N시간 M분 전 / N일 전"
@@ -106,19 +131,12 @@ class _HealthCareStressScreenState extends State<HealthCareStressScreen> {
   }
 
   Future<void> _onManualMeasureSuccess(Map<dynamic, dynamic> result) async {
-    final value = await persistManualMeasurement(
+    await persistManualMeasurement(
       dataType: DataType.Stress,
       result: result,
       metrics: context.read<HealthLiveMetrics>(),
+      refreshNotifier: context.read<HealthDataRefreshNotifier>(),
     );
-    if (!mounted || value == null) return;
-    setState(() {
-      _latestStress = value;
-      _latestValueText = value.toString();
-      _latestLabel = '방금 전';
-      _latestLoading = false;
-      _chartRefreshKey++;
-    });
   }
 
   @override
@@ -165,7 +183,6 @@ class _HealthCareStressScreenState extends State<HealthCareStressScreen> {
                 StressHrvMessages(future: _healthMessageFuture),
                 const SizedBox(height: 16),
                 HealthChartCard(
-                  key: ValueKey(_chartRefreshKey),
                   unit: unit,
                   selectedRange: _selectedRange,
                   onChanged: (range) => setState(() => _selectedRange = range),

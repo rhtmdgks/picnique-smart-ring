@@ -1,6 +1,6 @@
 import 'package:picnique_rosary_healthcare_smartring/core/enum/bar.dart';
 
-enum ToggleRange { day, week, month, halfYear, year }
+enum ToggleRange { day, week, month, halfYear }
 
 extension ToggleRangeWindow on ToggleRange {
   int get window {
@@ -12,9 +12,7 @@ extension ToggleRangeWindow on ToggleRange {
       case ToggleRange.month:
         return 31;
       case ToggleRange.halfYear:
-        return 6;
-      case ToggleRange.year:
-        return 12;
+        return 3;
     }
   }
 }
@@ -30,8 +28,6 @@ extension ToggleRangeUnitX on ToggleRange {
         return UnitX.day;
       case ToggleRange.halfYear:
         return UnitX.month;
-      case ToggleRange.year:
-        return UnitX.month;
     }
   }
 }
@@ -46,8 +42,6 @@ extension ToggleRangeIntervalX on ToggleRange {
       case ToggleRange.month:
         return 5;
       case ToggleRange.halfYear:
-        return 1;
-      case ToggleRange.year:
         return 1;
     }
   }

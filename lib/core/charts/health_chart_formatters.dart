@@ -36,7 +36,6 @@ String formatTooltipX(
     case ToggleRange.month:
       return formatChartMd(dt);
     case ToggleRange.halfYear:
-    case ToggleRange.year:
       return formatChartYm(dt);
   }
 }
@@ -66,7 +65,6 @@ String formatAxisX(
     case ToggleRange.month:
       return '${dt.day}';
     case ToggleRange.halfYear:
-    case ToggleRange.year:
       return '${dt.month}월';
   }
 }
@@ -115,8 +113,6 @@ List<double> computeSparseXTicks({
       return _evenlySpacedTicks(minX, maxX, 5);
     case ToggleRange.halfYear:
       return _evenlySpacedTicks(minX, maxX, 4);
-    case ToggleRange.year:
-      return _evenlySpacedTicks(minX, maxX, 4);
   }
 }
 
@@ -141,7 +137,6 @@ String formatTooltipXLegacy(double xMs, ToggleRange range) {
     case ToggleRange.month:
       return formatChartMd(dt);
     case ToggleRange.halfYear:
-    case ToggleRange.year:
       return formatChartYm(dt);
   }
 }
@@ -154,7 +149,7 @@ String rangeWindowLabel(ToggleRange range, DateTime selectedDate) {
   switch (range) {
     case ToggleRange.day:
       final s = day0(selectedDate);
-      return '${formatChartMd(s)} 00:00 ~ 23:59';
+      return formatChartMd(s);
     case ToggleRange.week:
       final end = endOfDay(now).subtract(const Duration(seconds: 1));
       final start = day0(now.subtract(const Duration(days: 6)));
@@ -165,12 +160,7 @@ String rangeWindowLabel(ToggleRange range, DateTime selectedDate) {
       return '${formatChartYmd(start)} ~ ${formatChartYmd(end)}';
     case ToggleRange.halfYear:
       final cur = DateTime(now.year, now.month, 1);
-      final start = DateTime(cur.year, cur.month - 5, 1);
-      final end = DateTime(cur.year, cur.month + 1, 0);
-      return '${formatChartYm(start)} ~ ${formatChartYm(end)}';
-    case ToggleRange.year:
-      final cur = DateTime(now.year, now.month, 1);
-      final start = DateTime(cur.year, cur.month - 11, 1);
+      final start = DateTime(cur.year, cur.month - 2, 1);
       final end = DateTime(cur.year, cur.month + 1, 0);
       return '${formatChartYm(start)} ~ ${formatChartYm(end)}';
   }

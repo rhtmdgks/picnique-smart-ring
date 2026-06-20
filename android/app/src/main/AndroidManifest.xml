@@ -17,6 +17,7 @@
     <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
 
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
@@ -32,7 +33,7 @@
         <service
             android:name=".MyForegroundService"
             android:exported="false"
-            android:foregroundServiceType="specialUse" />
+            android:foregroundServiceType="connectedDevice|specialUse" />
 
         <receiver
             android:name=".BootCompletedReceiver"
