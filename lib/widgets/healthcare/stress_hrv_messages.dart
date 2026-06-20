@@ -3,63 +3,61 @@ import 'package:picnique_rosary_healthcare_smartring/core/constants/colors.dart'
 import 'package:picnique_rosary_healthcare_smartring/core/constants/fonts.dart';
 import 'package:picnique_rosary_healthcare_smartring/util/TrendUtil.dart';
 
+class StressHrvMessageResult {
+  const StressHrvMessageResult({required this.isNight, required this.message});
+
+  final bool isNight;
+  final String message;
+
+  String get label => isNight ? '야간 HRV' : 'HRV';
+}
+
 class StressHrvMessages extends StatelessWidget {
   const StressHrvMessages({super.key, required this.future});
 
-  final Future<String> future;
+  final Future<StressHrvMessageResult> future;
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<String>(
+    return FutureBuilder<StressHrvMessageResult>(
       future: future,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
-          return const _StressMessageTile(
-            label: 'HRV',
+          final label = isNightHrvPeriod() ? '야간 HRV' : 'HRV';
+          return _StressMessageTile(
+            label: label,
             message: '메시지를 불러오고 있어요...',
           );
         }
         if (snapshot.hasError || snapshot.data == null) {
-          return const _StressMessageTile(
-            label: 'HRV',
+          final label = isNightHrvPeriod() ? '야간 HRV' : 'HRV';
+          return _StressMessageTile(
+            label: label,
             message: '메시지를 불러오지 못했어요.\n잠시 후 다시 확인해 주세요.',
           );
         }
 
-        final lines = snapshot.data!.split('\n\n');
-        if (lines.length < 2) {
-          return _StressMessageTile(label: 'HRV', message: snapshot.data!);
-        }
-
-        return Column(
-          children: [
-            _StressMessageTile(label: 'HRV', message: lines[0]),
-            const SizedBox(height: 8),
-            _StressMessageTile(label: '야간 HRV', message: lines[1]),
-          ],
-        );
+        final result = snapshot.data!;
+        return _StressMessageTile(label: result.label, message: result.message);
       },
     );
   }
 }
 
-Future<String> buildStressHrvMessages() {
-  return Future.wait([getHrvTrendMessage(), getNightHrvMessage()]).then((
-    results,
-  ) {
-    final parts = <String>[];
+Future<StressHrvMessageResult> buildStressHrvMessages() async {
+  final isNight = isNightHrvPeriod();
 
-    parts.add(
-      results[0] ??
-          '지난 2주 평균과 비교할 HRV 데이터가 아직 없어요.\n조금 더 모이면 알려드릴게요.',
-    );
-    parts.add(
-      results[1] ??
-          '어젯밤 회복 데이터가 아직 없어요.\n수면 후 다시 확인보면 좋아요.',
-    );
+  if (isNight) {
+    final message =
+        await getNightHrvMessage() ??
+        '어젯밤 회복 데이터가 아직 없어요.\n수면 후 다시 확인보면 좋아요.';
+    return StressHrvMessageResult(isNight: true, message: message);
+  }
 
-    return parts.join('\n\n');
-  });
+  final message =
+      await getHrvTrendMessage() ??
+      '지난 2주 평균과 비교할 HRV 데이터가 아직 없어요.\n조금 더 모이면 알려드릴게요.';
+  return StressHrvMessageResult(isNight: false, message: message);
 }
 
 class _StressMessageTile extends StatelessWidget {

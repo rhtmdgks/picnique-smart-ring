@@ -16,13 +16,16 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:url_launcher/url_launcher.dart'; // pubspec에 추가 필요
 import 'package:picnique_rosary_healthcare_smartring/core/enum/data_type.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/db/db_manager.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/ble_command_queue.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/health_live_metrics.dart';
 
 import '../db/app_db.dart';
 
-const MethodChannel _blePlatformChannel = MethodChannel(
-  'com.example.picnique_ring/ble',
-);
+const MethodChannel _blePlatformChannel = BleCommandQueue.channel;
+
+Future<T?> _bleInvoke<T>(String method, [dynamic arguments]) {
+  return BleCommandQueue.invoke<T>(method, arguments);
+}
 
 Future<bool> ensureBluetoothOn(
   BuildContext context, {
@@ -61,7 +64,7 @@ Future<bool> _ensureBluetoothOnIos(
   String? state;
   while (DateTime.now().isBefore(initDeadline)) {
     try {
-      state = await _blePlatformChannel.invokeMethod<String>(
+      state = await _bleInvoke<String>(
         'getBluetoothState',
       );
     } on PlatformException catch (e) {
@@ -123,7 +126,7 @@ Future<bool> _ensureBluetoothOnIos(
   final deadline = DateTime.now().add(timeout);
   while (DateTime.now().isBefore(deadline)) {
     try {
-      state = await _blePlatformChannel.invokeMethod<String>(
+      state = await _bleInvoke<String>(
         'getBluetoothState',
       );
       if (state == 'on') return true;
@@ -141,7 +144,7 @@ Future<bool> isBluetoothReady({
     final deadline = DateTime.now().add(timeout);
     while (DateTime.now().isBefore(deadline)) {
       try {
-        final state = await _blePlatformChannel.invokeMethod<String>(
+        final state = await _bleInvoke<String>(
           'getBluetoothState',
         );
         if (state == 'on') return true;
@@ -179,7 +182,7 @@ Future<void> enableRingAutoMonitoring({
 }) async {
   const hrInterval = 30;
   try {
-    await platform.invokeMethod('writeHrSetting', {
+    await _bleInvoke('writeHrSetting', {
       'isEnable': true,
       'interval': hrInterval,
     });
@@ -187,14 +190,14 @@ Future<void> enableRingAutoMonitoring({
     debugPrint('[ERR] writeHrSetting: $e');
   }
   try {
-    await platform.invokeMethod('writeSpo2Setting', {
+    await _bleInvoke('writeSpo2Setting', {
       'isEnable': true,
     });
   } catch (e) {
     debugPrint('[ERR] writeSpo2Setting: $e');
   }
   try {
-    await platform.invokeMethod('writePressureSetting', {
+    await _bleInvoke('writePressureSetting', {
       'isEnable': true,
     });
   } catch (e) {
@@ -214,28 +217,28 @@ Future<void> printAndEnableAllSettings(MethodChannel platform) async {
 
   // 1) 현재 상태 읽기
   try {
-    await platform.invokeMethod('readHrSetting');
+    await _bleInvoke('readHrSetting');
   } catch (e) {
     debugPrint('[ERR] readHrSetting: $e');
   }
   try {
-    await platform.invokeMethod('readSpo2Setting');
+    await _bleInvoke('readSpo2Setting');
   } catch (e) {
     debugPrint('[ERR] readSpo2Setting: $e');
   }
   try {
-    await platform.invokeMethod('readPressureSetting');
+    await _bleInvoke('readPressureSetting');
   } catch (e) {
     debugPrint('[ERR] readPressureSetting: $e');
   }
   try {
-    await platform.invokeMethod('readHrvSetting');
+    await _bleInvoke('readHrvSetting');
   } catch (e) {
     debugPrint('[ERR] readHrvSetting: $e');
   }
   try {
     bp = Map<String, dynamic>.from(
-      await platform.invokeMethod('readBpSetting'),
+      await _bleInvoke('readBpSetting'),
     );
   } catch (e) {
     debugPrint('[ERR] readBpSetting: $e');
@@ -245,7 +248,7 @@ Future<void> printAndEnableAllSettings(MethodChannel platform) async {
   final hrInterval = 5;
 
   try {
-    await platform.invokeMethod('writeHrSetting', {
+    await _bleInvoke('writeHrSetting', {
       'isEnable': true,
       'interval': hrInterval,
     });
@@ -254,7 +257,7 @@ Future<void> printAndEnableAllSettings(MethodChannel platform) async {
   }
 
   try {
-    await platform.invokeMethod('writeSpo2Setting', {
+    await _bleInvoke('writeSpo2Setting', {
       'isEnable': true,
     });
   } catch (e) {
@@ -262,7 +265,7 @@ Future<void> printAndEnableAllSettings(MethodChannel platform) async {
   }
 
   try {
-    await platform.invokeMethod('writePressureSetting', {
+    await _bleInvoke('writePressureSetting', {
       'isEnable': true,
     });
   } catch (e) {
@@ -270,7 +273,7 @@ Future<void> printAndEnableAllSettings(MethodChannel platform) async {
   }
 
   try {
-    await platform.invokeMethod('writeHrvSetting', {
+    await _bleInvoke('writeHrvSetting', {
       'isEnable': true,
     });
   } catch (e) {
@@ -286,7 +289,7 @@ Future<void> printAndEnableAllSettings(MethodChannel platform) async {
   final multiple = as<int>(bp?['multiple'], 60);
 
   try {
-    await platform.invokeMethod('writeBpSetting', {
+    await _bleInvoke('writeBpSetting', {
       'isEnable': true,
       'startHour': startHour,
       'startMinute': startMinute,
@@ -300,28 +303,27 @@ Future<void> printAndEnableAllSettings(MethodChannel platform) async {
 
   // 3) 결과 재확인 (읽고 print)
   try {
-    await platform.invokeMethod('readHrSetting');
+    await _bleInvoke('readHrSetting');
   } catch (_) {}
   try {
-    await platform.invokeMethod('readSpo2Setting');
+    await _bleInvoke('readSpo2Setting');
   } catch (_) {}
   try {
-    await platform.invokeMethod('readPressureSetting');
+    await _bleInvoke('readPressureSetting');
   } catch (_) {}
   try {
-    await platform.invokeMethod('readHrvSetting');
+    await _bleInvoke('readHrvSetting');
   } catch (_) {}
   try {
     bp = Map<String, dynamic>.from(
-      await platform.invokeMethod('readBpSetting'),
+      await _bleInvoke('readBpSetting'),
     );
   } catch (_) {}
 }
 
 Future<void> printBattery(MethodChannel platform, Ring ringProvider) async {
   try {
-    final battery = await platform
-        .invokeMethod<dynamic>('getBatteryLevel')
+    final battery = await _bleInvoke<dynamic>('getBatteryLevel')
         .timeout(const Duration(seconds: 10));
     if (battery is Map) {
       final level = battery['level'] ?? battery['battery'];
@@ -341,7 +343,7 @@ Future<void> printBattery(MethodChannel platform, Ring ringProvider) async {
 
 Future<void> printSetting(MethodChannel platform) async {
   try {
-    final Map<dynamic, dynamic>? rsp = await platform.invokeMethod(
+    final Map<dynamic, dynamic>? rsp = await _bleInvoke(
       "syncTimeAndGetCoreFeatures",
     );
 
@@ -358,8 +360,7 @@ Future<void> printManualHeartRate(
   Ring ringProvider,
 ) async {
   try {
-    final Map<dynamic, dynamic>? resp = await platform
-        .invokeMethod("syncManualHeartRate")
+    final Map<dynamic, dynamic>? resp = await _bleInvoke("syncManualHeartRate")
         .timeout(const Duration(seconds: 30)); // 15초 타임아웃
 
     if (resp == null) return;
@@ -400,11 +401,12 @@ Future<void> printHeartRate(
     final int tzSec = DateTime.now().timeZoneOffset.inSeconds;
     final int nowTimeLocalSec = nowUtcSec + tzSec;
 
-    final Map<dynamic, dynamic>? resp = await platform
-        .invokeMethod<Map<dynamic, dynamic>>("syncHeartRate", <String, dynamic>{
-          "nowTime": nowTimeLocalSec,
-        })
-        .timeout(const Duration(seconds: 15));
+    final Map<dynamic, dynamic>? resp = await _bleInvoke<Map<dynamic, dynamic>>(
+      "syncHeartRate",
+      <String, dynamic>{
+        "nowTime": nowTimeLocalSec,
+      },
+    ).timeout(const Duration(seconds: 15));
 
     if (resp == null) return;
 
@@ -440,7 +442,7 @@ Future<void> printSleepDetail(
 
   try {
     // Android 측 syncSleepNew(offset, result)와 맞춰 호출
-    final rsp = await platform.invokeMethod<Map<dynamic, dynamic>>(
+    final rsp = await _bleInvoke<Map<dynamic, dynamic>>(
       "syncSleepNew",
       <String, dynamic>{"offset": dayOffset},
     );
@@ -488,7 +490,7 @@ Future<void> syncAutoTemperatureAndPrint(
 }) async {
   try {
     // 네이티브 호출
-    final raw = await platform.invokeMethod<dynamic>(
+    final raw = await _bleInvoke<dynamic>(
       'syncAutoTemperature',
       <String, dynamic>{'days': days},
     );
@@ -512,16 +514,14 @@ Future<void> syncAutoTemperatureAndPrint(
 
 Future<void> enableRing(MethodChannel platform, Ring ringProvider) async {
   try {
-    final Map<dynamic, dynamic>? rsp = await platform
-        .invokeMethod("readHrSetting")
+    final Map<dynamic, dynamic>? rsp = await _bleInvoke("readHrSetting")
         .timeout(const Duration(seconds: 15));
     if (rsp == null) return;
     if (rsp["isEnable"] == false) {
-      final Map<dynamic, dynamic>? rsp2 = await platform
-          .invokeMethod<Map<dynamic, dynamic>>(
-            "writeHrSettings",
-            <String, dynamic>{"isEnabled": true, "interval": 60},
-          );
+      final Map<dynamic, dynamic>? rsp2 = await _bleInvoke<Map<dynamic, dynamic>>(
+        "writeHrSettings",
+        <String, dynamic>{"isEnabled": true, "interval": 60},
+      );
       if (rsp2 == null) return;
     }
   } on TimeoutException {
@@ -951,11 +951,12 @@ Future<List<int>?> _fetchHeartArrayForDate(
     final int middayUtcSec = localMidday.millisecondsSinceEpoch ~/ 1000;
     final int nowTimeLocalSec = middayUtcSec;
 
-    final Map<dynamic, dynamic>? resp = await platform
-        .invokeMethod<Map<dynamic, dynamic>>("syncHeartRate", <String, dynamic>{
-          "nowTime": nowTimeLocalSec,
-        })
-        .timeout(const Duration(seconds: 15));
+    final Map<dynamic, dynamic>? resp = await _bleInvoke<Map<dynamic, dynamic>>(
+      "syncHeartRate",
+      <String, dynamic>{
+        "nowTime": nowTimeLocalSec,
+      },
+    ).timeout(const Duration(seconds: 15));
 
     if (resp == null) return null;
 
@@ -983,7 +984,7 @@ Future<void> syncAndSaveSportDetails(
   required int dayOffset,
 }) async {
   // Kotlin: syncSportDetail(dayOffset, result)
-  final resp = await platform.invokeMethod<Map>('syncSportDetail', {
+  final resp = await _bleInvoke<Map>('syncSportDetail', {
     'dayOffset': dayOffset,
   });
 
@@ -997,9 +998,12 @@ Future<void> syncAndSaveSportDetails(
 }
 
 /// 반지에서 오늘 활동 요약을 직접 조회한다. (DB 동기화 없이 즉시 반영용)
-Future<Map<String, int>?> fetchTodaySportFromRing(MethodChannel platform) async {
+Future<Map<String, int>?> fetchTodaySportFromRing(
+  MethodChannel platform, {
+  void Function(Object error)? onError,
+}) async {
   try {
-    final res = await platform.invokeMethod<dynamic>('syncTodaySport');
+    final res = await _bleInvoke<dynamic>('syncTodaySport');
     if (res is! Map) return null;
 
     int asInt(dynamic value) {
@@ -1015,7 +1019,7 @@ Future<Map<String, int>?> fetchTodaySportFromRing(MethodChannel platform) async 
       'sportDuration': asInt(res['sportDuration']),
     };
   } catch (e) {
-    debugPrint('[SPORT_TODAY] fetch failed: $e');
+    onError?.call(e);
     return null;
   }
 }
@@ -1091,7 +1095,7 @@ Future<void> syncRecent7DaysStressToDb(
     // 1) 네이티브 호출
     Map<dynamic, dynamic>? resp;
     try {
-      resp = await platform.invokeMethod<Map<dynamic, dynamic>>(
+      resp = await _bleInvoke<Map<dynamic, dynamic>>(
         'syncPressure',
         {'offset': offset},
       );
@@ -1190,7 +1194,7 @@ Future<void> syncRecent3DaysSportDetailsToDb(
     // 네이티브 호출
     Map<dynamic, dynamic>? resp;
     try {
-      resp = await platform.invokeMethod<Map<dynamic, dynamic>>(
+      resp = await _bleInvoke<Map<dynamic, dynamic>>(
         'syncSportDetail',
         {'dayOffset': offset},
       );
@@ -1267,8 +1271,7 @@ Future<void> syncRecent3DaysOxygenToDb(
   try {
     // Kotlin: once.success(out)  // out: List<Map<String, Any?>>
     final t0 = DateTime.now();
-    final resp = await platform
-        .invokeMethod<List<dynamic>>('syncBloodOxygen')
+    final resp = await _bleInvoke<List<dynamic>>('syncBloodOxygen')
         .timeout(const Duration(seconds: 20));
     debugPrint(
       "[OXY_SYNC] native returned count=${resp?.length ?? 0} in ${DateTime.now().difference(t0).inMilliseconds}ms",
@@ -1393,7 +1396,7 @@ Future<void> _upsertSleepDetailsForOffsets({
   for (final offset in offsets) {
     Map<dynamic, dynamic>? rsp;
     try {
-      rsp = await platform.invokeMethod<Map<dynamic, dynamic>>(
+      rsp = await _bleInvoke<Map<dynamic, dynamic>>(
         "syncSleepNew",
         <String, dynamic>{"offset": offset},
       );

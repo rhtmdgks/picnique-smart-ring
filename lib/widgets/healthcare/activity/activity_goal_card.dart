@@ -347,7 +347,7 @@ class ActivityGoalCard extends StatelessWidget {
             children: [
               _Metric(
                 label: "칼로리",
-                value: (calories / 1000.0).toString(),
+                value: (calories / 1000.0).toStringAsFixed(1),
                 goal: "/ ${(calorieGoal / 1000).toInt()} kcal",
                 color: AppColors.pink,
               ),

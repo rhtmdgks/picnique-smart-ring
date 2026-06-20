@@ -73,6 +73,14 @@ class MainActivity : FlutterActivity() {
                         deviceAddress = call.argument<String>("deviceAddress"),
                         result = result
                     )
+                    "connectWithScan" -> bridge.connectWithScan(
+                        deviceAddress = call.argument<String>("deviceAddress"),
+                        result = result
+                    )
+                    "setNeedConnect" -> bridge.setNeedConnect(
+                        needConnect = call.argument<Boolean>("needConnect") ?: true,
+                        result = result
+                    )
                     "disconnect" -> bridge.disconnect(result)
                     "getBatteryLevel" -> bridge.getBatteryLevel(result)
 
@@ -174,6 +182,12 @@ class MainActivity : FlutterActivity() {
                     "enableSimpleTouchLogging" -> bridge.enableSimpleTouchLogging(result)
                     "getRingTouchCount" -> result.success(bridge.getTouchCount())
                     "disableSimpleTouchLogging" -> bridge.disableSimpleTouchLogging(result)
+                    "setRingTouchMode" -> bridge.setRingTouchMode(
+                        appType = call.argument<Int>("appType") ?: 8,
+                        touchOn = call.argument<Boolean>("touchOn") ?: true,
+                        strength = call.argument<Int>("strength") ?: 1,
+                        result = result
+                    )
                     "enableRealtimeNotifications" -> bridge.enableRealtimeNotifications(result)
                     "disableRealtimeNotifications" -> bridge.disableRealtimeNotifications(result)
                     "ensureIgnoreBatteryOptimizations" -> ensureIgnoreBatteryOptimizations(result)

@@ -1,13 +1,12 @@
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/constants/colors.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/constants/fonts.dart';
 import 'package:picnique_rosary_healthcare_smartring/screens/layouts/background_layout.dart';
-import 'package:provider/provider.dart';
-import 'package:picnique_rosary_healthcare_smartring/providers/ring.dart';
-import 'package:picnique_rosary_healthcare_smartring/services/ring_live_activity.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_connection_coordinator.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/ring_connection_service.dart';
 import 'package:picnique_rosary_healthcare_smartring/util/TouchCounter.dart';
 import 'package:picnique_rosary_healthcare_smartring/db/app_db.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/db/db_manager.dart';
@@ -32,6 +31,7 @@ class _CatholicRosaryScreenState extends State<CatholicRosaryScreen>
   RingTouchController touchCounter = RingTouchController();
   late final VoidCallback _onCounterUpdated;
   DateTime? _sessionStart;
+  RosarySession? _pendingDedication;
   DateTime today = DateTime.now();
   String get todayStr =>
       "${today.year % 100}.${today.month.toString().padLeft(2, '0')}.${today.day.toString().padLeft(2, '0')}";
@@ -68,41 +68,147 @@ class _CatholicRosaryScreenState extends State<CatholicRosaryScreen>
       setState(() {});
     };
     touchCounter.addListener(_onCounterUpdated);
+    _refreshPendingDedication();
   }
 
-  Future<void> _startRecording() async {
-    final ring = context.read<Ring>();
-    final live = context.read<RingLiveActivity>();
+  bool get _canDedicate =>
+      !_isRecording &&
+      _pendingDedication != null &&
+      _pendingDedication!.tapCount > 0;
 
-    if (!ring.isConnected) {
-      final hasSaved = ring.hasSavedDevice;
-      if (hasSaved) {
-        final ok = await RingConnectionCoordinator.instance.ensureConnected();
-        if (!ok && mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('스마트링 연결 후 기록을 시작해 주세요.'),
-            ),
-          );
-          return;
-        }
-      } else if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('스마트링을 연결한 뒤 기록을 시작해 주세요.'),
+  Future<void> _refreshPendingDedication() async {
+    try {
+      final pending =
+          await DbManager.I.appDB.latestUndedicatedRosarySession();
+      if (!mounted) return;
+      setState(() => _pendingDedication = pending);
+    } catch (e) {
+      debugPrint('Failed to load pending WYD dedication: $e');
+    }
+  }
+
+  Future<void> _handleWydDedication() async {
+    if (_isRecording) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('기도 기록을 먼저 마쳐 주세요.')),
+      );
+      return;
+    }
+
+    final pending = _pendingDedication;
+    if (pending == null || pending.tapCount <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            '봉헌할 기도 기록이 없습니다.\n기도를 기록한 뒤 다시 시도해 주세요.',
           ),
+        ),
+      );
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF2A2038),
+        title: Text(
+          'WYD 봉헌하기',
+          style: TextStyle(
+            color: Colors.white,
+            fontWeight: AppFontWeight.semiBold,
+          ),
+        ),
+        content: Text(
+          '기록하신 ${pending.tapCount}단을\n2027 서울 세계청년대회(WYD)에 봉헌하시겠습니까?',
+          style: TextStyle(
+            color: AppColors.lightGray,
+            height: 1.5,
+            fontWeight: AppFontWeight.regular,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: Text(
+              '취소',
+              style: TextStyle(color: AppColors.lightGray),
+            ),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: FilledButton.styleFrom(
+              backgroundColor: AppColors.lightPurple,
+            ),
+            child: const Text('봉헌하기'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    try {
+      final ok = await DbManager.I.appDB.markRosarySessionWydDedicated(
+        pending.id,
+      );
+      if (!mounted) return;
+      if (!ok) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('봉헌 처리에 실패했습니다. 다시 시도해 주세요.')),
         );
         return;
       }
+
+      setState(() => _pendingDedication = null);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '${pending.tapCount}단이 WYD에 봉헌되었습니다.\n감사합니다.',
+          ),
+        ),
+      );
+    } catch (e) {
+      debugPrint('WYD dedication failed: $e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('봉헌 처리 중 오류가 발생했습니다.')),
+      );
+    }
+  }
+
+  Future<void> _startRecording() async {
+    final connected = await RingConnectionCoordinator.instance.ensureConnected();
+    if (!connected && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('스마트링 연결 후 기록을 시작해 주세요.'),
+        ),
+      );
+      return;
+    }
+
+    try {
+      await RingConnectionService.syncTimeAfterConnect();
+    } catch (e) {
+      debugPrint('[ROSARY] syncTime before touch failed: $e');
     }
 
     _sessionStart = DateTime.now();
     touchCounter.tapCount = 0;
     try {
-      await touchCounter.start(
-        liveActivity: live,
+      await touchCounter.start();
+    } on PlatformException catch (e) {
+      debugPrint('[ROSARY] touch start failed: ${e.code} ${e.message}');
+      if (!mounted) return;
+      final message = e.code == 'NOT_CONNECTED'
+          ? '스마트링이 연결되어 있지 않습니다.\n설정에서 반지를 다시 연결해 주세요.'
+          : '반지 터치 모드를 켜지 못했어요.\n연결 상태를 확인한 뒤 다시 시도해 주세요.';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
       );
+      return;
     } catch (e) {
+      debugPrint('[ROSARY] touch start failed: $e');
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -137,6 +243,7 @@ class _CatholicRosaryScreenState extends State<CatholicRosaryScreen>
             tapCount: taps,
           ),
         );
+        await _refreshPendingDedication();
       } catch (e) {
         debugPrint('Failed to save rosary session: $e');
       }
@@ -236,13 +343,9 @@ class _CatholicRosaryScreenState extends State<CatholicRosaryScreen>
                       ),
                       SizedBox(height: 16),
                       GestureDetector(
-                        onTap: () {
-                          if (!_isRecording) {
-                            // TODO(task): 비기록 상태 탭 시 봉헌 플로우(확인 다이얼로그/저장/완료 피드백) 연결.
-                          }
-                        },
+                        onTap: _handleWydDedication,
                         child: Opacity(
-                          opacity: _isRecording ? 0.2 : 1.0,
+                          opacity: _canDedicate ? 1.0 : 0.25,
                           child: Row(
                             children: [
                               Image.asset(
@@ -252,7 +355,6 @@ class _CatholicRosaryScreenState extends State<CatholicRosaryScreen>
                                 fit: BoxFit.cover, // 이미지가 잘리더라도 영역을 꽉 채움
                               ),
                               SizedBox(width: 16),
-                              // TODO(task): 기획 문구 확정 후 i18n 키 기반 텍스트로 교체.
                               Text(
                                 "WYD 봉헌하기",
                                 style: TextStyle(
@@ -310,7 +412,6 @@ class _CatholicRosaryScreenState extends State<CatholicRosaryScreen>
           ),
         ),
         floatingActionButton: FloatingActionButton(
-          // TODO(task): FAB 제거 후 링 터치 이벤트를 동일 동작(_controller.forward + count 증가)에 매핑.
           onPressed: () {
             if (_isRecording) {
               _controller.forward();

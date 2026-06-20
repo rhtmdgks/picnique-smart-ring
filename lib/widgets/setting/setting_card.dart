@@ -21,6 +21,7 @@ class SettingCard extends StatelessWidget {
         await BatteryNotificationService.onBatteryLevel(battery);
       }
     }
+    if (!context.mounted) return;
     if (!ok && next) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(

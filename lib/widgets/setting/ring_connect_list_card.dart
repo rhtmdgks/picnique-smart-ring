@@ -5,11 +5,13 @@ import 'package:picnique_rosary_healthcare_smartring/widgets/setting/ring_connec
 
 class RingConnectListCard extends StatelessWidget {
   final List<Map<String, String>> connectList;
+  final bool isScanning;
   final Future<void> Function(String address)? onConnect;
 
   const RingConnectListCard({
     super.key,
     required this.connectList,
+    required this.isScanning,
     this.onConnect,
   });
 
@@ -27,14 +29,29 @@ class RingConnectListCard extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (connectList.isEmpty)
+            if (isScanning && connectList.isEmpty)
               Padding(
                 padding: const EdgeInsets.symmetric(
                   horizontal: 16,
                   vertical: 8,
                 ),
-                child: const Text(
-                  "발견된 스마트링이 없습니다.",
+                child: Text(
+                  '주변 스마트링을 찾고 있어요',
+                  style: TextStyle(
+                    color: AppColors.lightGray.withValues(alpha: 0.75),
+                    fontSize: 13,
+                    fontWeight: AppFontWeight.regular,
+                  ),
+                ),
+              )
+            else if (!isScanning && connectList.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 8,
+                ),
+                child: Text(
+                  '아직 발견된 스마트링이 없어요',
                   style: TextStyle(
                     color: AppColors.lightGray,
                     fontSize: 14,

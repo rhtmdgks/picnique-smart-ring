@@ -1581,8 +1581,29 @@ class $RosarySessionsTable extends RosarySessions
     type: DriftSqlType.int,
     requiredDuringInsert: true,
   );
+  static const VerificationMeta _wydDedicatedMeta = const VerificationMeta(
+    'wydDedicated',
+  );
   @override
-  List<GeneratedColumn> get $columns => [id, startAt, endAt, tapCount];
+  late final GeneratedColumn<bool> wydDedicated = GeneratedColumn<bool>(
+    'wyd_dedicated',
+    aliasedName,
+    false,
+    type: DriftSqlType.bool,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'CHECK ("wyd_dedicated" IN (0, 1))',
+    ),
+    defaultValue: const Constant(false),
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    id,
+    startAt,
+    endAt,
+    tapCount,
+    wydDedicated,
+  ];
   @override
   String get aliasedName => _alias ?? actualTableName;
   @override
@@ -1622,6 +1643,15 @@ class $RosarySessionsTable extends RosarySessions
     } else if (isInserting) {
       context.missing(_tapCountMeta);
     }
+    if (data.containsKey('wyd_dedicated')) {
+      context.handle(
+        _wydDedicatedMeta,
+        wydDedicated.isAcceptableOrUnknown(
+          data['wyd_dedicated']!,
+          _wydDedicatedMeta,
+        ),
+      );
+    }
     return context;
   }
 
@@ -1647,6 +1677,10 @@ class $RosarySessionsTable extends RosarySessions
         DriftSqlType.int,
         data['${effectivePrefix}tap_count'],
       )!,
+      wydDedicated: attachedDatabase.typeMapping.read(
+        DriftSqlType.bool,
+        data['${effectivePrefix}wyd_dedicated'],
+      )!,
     );
   }
 
@@ -1661,11 +1695,13 @@ class RosarySession extends DataClass implements Insertable<RosarySession> {
   final DateTime startAt;
   final DateTime endAt;
   final int tapCount;
+  final bool wydDedicated;
   const RosarySession({
     required this.id,
     required this.startAt,
     required this.endAt,
     required this.tapCount,
+    required this.wydDedicated,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -1674,6 +1710,7 @@ class RosarySession extends DataClass implements Insertable<RosarySession> {
     map['start_at'] = Variable<DateTime>(startAt);
     map['end_at'] = Variable<DateTime>(endAt);
     map['tap_count'] = Variable<int>(tapCount);
+    map['wyd_dedicated'] = Variable<bool>(wydDedicated);
     return map;
   }
 
@@ -1683,6 +1720,7 @@ class RosarySession extends DataClass implements Insertable<RosarySession> {
       startAt: Value(startAt),
       endAt: Value(endAt),
       tapCount: Value(tapCount),
+      wydDedicated: Value(wydDedicated),
     );
   }
 
@@ -1696,6 +1734,7 @@ class RosarySession extends DataClass implements Insertable<RosarySession> {
       startAt: serializer.fromJson<DateTime>(json['startAt']),
       endAt: serializer.fromJson<DateTime>(json['endAt']),
       tapCount: serializer.fromJson<int>(json['tapCount']),
+      wydDedicated: serializer.fromJson<bool>(json['wydDedicated']),
     );
   }
   @override
@@ -1706,6 +1745,7 @@ class RosarySession extends DataClass implements Insertable<RosarySession> {
       'startAt': serializer.toJson<DateTime>(startAt),
       'endAt': serializer.toJson<DateTime>(endAt),
       'tapCount': serializer.toJson<int>(tapCount),
+      'wydDedicated': serializer.toJson<bool>(wydDedicated),
     };
   }
 
@@ -1714,11 +1754,13 @@ class RosarySession extends DataClass implements Insertable<RosarySession> {
     DateTime? startAt,
     DateTime? endAt,
     int? tapCount,
+    bool? wydDedicated,
   }) => RosarySession(
     id: id ?? this.id,
     startAt: startAt ?? this.startAt,
     endAt: endAt ?? this.endAt,
     tapCount: tapCount ?? this.tapCount,
+    wydDedicated: wydDedicated ?? this.wydDedicated,
   );
   RosarySession copyWithCompanion(RosarySessionsCompanion data) {
     return RosarySession(
@@ -1726,6 +1768,9 @@ class RosarySession extends DataClass implements Insertable<RosarySession> {
       startAt: data.startAt.present ? data.startAt.value : this.startAt,
       endAt: data.endAt.present ? data.endAt.value : this.endAt,
       tapCount: data.tapCount.present ? data.tapCount.value : this.tapCount,
+      wydDedicated: data.wydDedicated.present
+          ? data.wydDedicated.value
+          : this.wydDedicated,
     );
   }
 
@@ -1735,13 +1780,14 @@ class RosarySession extends DataClass implements Insertable<RosarySession> {
           ..write('id: $id, ')
           ..write('startAt: $startAt, ')
           ..write('endAt: $endAt, ')
-          ..write('tapCount: $tapCount')
+          ..write('tapCount: $tapCount, ')
+          ..write('wydDedicated: $wydDedicated')
           ..write(')'))
         .toString();
   }
 
   @override
-  int get hashCode => Object.hash(id, startAt, endAt, tapCount);
+  int get hashCode => Object.hash(id, startAt, endAt, tapCount, wydDedicated);
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
@@ -1749,7 +1795,8 @@ class RosarySession extends DataClass implements Insertable<RosarySession> {
           other.id == this.id &&
           other.startAt == this.startAt &&
           other.endAt == this.endAt &&
-          other.tapCount == this.tapCount);
+          other.tapCount == this.tapCount &&
+          other.wydDedicated == this.wydDedicated);
 }
 
 class RosarySessionsCompanion extends UpdateCompanion<RosarySession> {
@@ -1757,17 +1804,20 @@ class RosarySessionsCompanion extends UpdateCompanion<RosarySession> {
   final Value<DateTime> startAt;
   final Value<DateTime> endAt;
   final Value<int> tapCount;
+  final Value<bool> wydDedicated;
   const RosarySessionsCompanion({
     this.id = const Value.absent(),
     this.startAt = const Value.absent(),
     this.endAt = const Value.absent(),
     this.tapCount = const Value.absent(),
+    this.wydDedicated = const Value.absent(),
   });
   RosarySessionsCompanion.insert({
     this.id = const Value.absent(),
     required DateTime startAt,
     required DateTime endAt,
     required int tapCount,
+    this.wydDedicated = const Value.absent(),
   }) : startAt = Value(startAt),
        endAt = Value(endAt),
        tapCount = Value(tapCount);
@@ -1776,12 +1826,14 @@ class RosarySessionsCompanion extends UpdateCompanion<RosarySession> {
     Expression<DateTime>? startAt,
     Expression<DateTime>? endAt,
     Expression<int>? tapCount,
+    Expression<bool>? wydDedicated,
   }) {
     return RawValuesInsertable({
       if (id != null) 'id': id,
       if (startAt != null) 'start_at': startAt,
       if (endAt != null) 'end_at': endAt,
       if (tapCount != null) 'tap_count': tapCount,
+      if (wydDedicated != null) 'wyd_dedicated': wydDedicated,
     });
   }
 
@@ -1790,12 +1842,14 @@ class RosarySessionsCompanion extends UpdateCompanion<RosarySession> {
     Value<DateTime>? startAt,
     Value<DateTime>? endAt,
     Value<int>? tapCount,
+    Value<bool>? wydDedicated,
   }) {
     return RosarySessionsCompanion(
       id: id ?? this.id,
       startAt: startAt ?? this.startAt,
       endAt: endAt ?? this.endAt,
       tapCount: tapCount ?? this.tapCount,
+      wydDedicated: wydDedicated ?? this.wydDedicated,
     );
   }
 
@@ -1814,6 +1868,9 @@ class RosarySessionsCompanion extends UpdateCompanion<RosarySession> {
     if (tapCount.present) {
       map['tap_count'] = Variable<int>(tapCount.value);
     }
+    if (wydDedicated.present) {
+      map['wyd_dedicated'] = Variable<bool>(wydDedicated.value);
+    }
     return map;
   }
 
@@ -1823,7 +1880,8 @@ class RosarySessionsCompanion extends UpdateCompanion<RosarySession> {
           ..write('id: $id, ')
           ..write('startAt: $startAt, ')
           ..write('endAt: $endAt, ')
-          ..write('tapCount: $tapCount')
+          ..write('tapCount: $tapCount, ')
+          ..write('wydDedicated: $wydDedicated')
           ..write(')'))
         .toString();
   }
@@ -2750,6 +2808,7 @@ typedef $$RosarySessionsTableCreateCompanionBuilder =
       required DateTime startAt,
       required DateTime endAt,
       required int tapCount,
+      Value<bool> wydDedicated,
     });
 typedef $$RosarySessionsTableUpdateCompanionBuilder =
     RosarySessionsCompanion Function({
@@ -2757,6 +2816,7 @@ typedef $$RosarySessionsTableUpdateCompanionBuilder =
       Value<DateTime> startAt,
       Value<DateTime> endAt,
       Value<int> tapCount,
+      Value<bool> wydDedicated,
     });
 
 class $$RosarySessionsTableFilterComposer
@@ -2785,6 +2845,11 @@ class $$RosarySessionsTableFilterComposer
 
   ColumnFilters<int> get tapCount => $composableBuilder(
     column: $table.tapCount,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<bool> get wydDedicated => $composableBuilder(
+    column: $table.wydDedicated,
     builder: (column) => ColumnFilters(column),
   );
 }
@@ -2817,6 +2882,11 @@ class $$RosarySessionsTableOrderingComposer
     column: $table.tapCount,
     builder: (column) => ColumnOrderings(column),
   );
+
+  ColumnOrderings<bool> get wydDedicated => $composableBuilder(
+    column: $table.wydDedicated,
+    builder: (column) => ColumnOrderings(column),
+  );
 }
 
 class $$RosarySessionsTableAnnotationComposer
@@ -2839,6 +2909,11 @@ class $$RosarySessionsTableAnnotationComposer
 
   GeneratedColumn<int> get tapCount =>
       $composableBuilder(column: $table.tapCount, builder: (column) => column);
+
+  GeneratedColumn<bool> get wydDedicated => $composableBuilder(
+    column: $table.wydDedicated,
+    builder: (column) => column,
+  );
 }
 
 class $$RosarySessionsTableTableManager
@@ -2878,11 +2953,13 @@ class $$RosarySessionsTableTableManager
                 Value<DateTime> startAt = const Value.absent(),
                 Value<DateTime> endAt = const Value.absent(),
                 Value<int> tapCount = const Value.absent(),
+                Value<bool> wydDedicated = const Value.absent(),
               }) => RosarySessionsCompanion(
                 id: id,
                 startAt: startAt,
                 endAt: endAt,
                 tapCount: tapCount,
+                wydDedicated: wydDedicated,
               ),
           createCompanionCallback:
               ({
@@ -2890,11 +2967,13 @@ class $$RosarySessionsTableTableManager
                 required DateTime startAt,
                 required DateTime endAt,
                 required int tapCount,
+                Value<bool> wydDedicated = const Value.absent(),
               }) => RosarySessionsCompanion.insert(
                 id: id,
                 startAt: startAt,
                 endAt: endAt,
                 tapCount: tapCount,
+                wydDedicated: wydDedicated,
               ),
           withReferenceMapper: (p0) => p0
               .map((e) => (e.readTable(table), BaseReferences(db, table, e)))

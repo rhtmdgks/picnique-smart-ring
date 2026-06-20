@@ -8,22 +8,47 @@ class BatteryStatus extends StatelessWidget {
     super.key,
     required this.battery,
     this.isCharging = false,
+    this.isLoading = false,
   });
 
-  final int battery;
+  final int? battery;
   final bool isCharging;
+  final bool isLoading;
 
   String get _iconName {
     if (isCharging) return 'charge';
-    if (battery < 20) return 'battery_20';
-    if (battery < 40) return 'battery_40';
-    if (battery < 60) return 'battery_60';
-    if (battery < 80) return 'battery_80';
+    final level = battery ?? 0;
+    if (level < 20) return 'battery_20';
+    if (level < 40) return 'battery_40';
+    if (level < 60) return 'battery_60';
+    if (level < 80) return 'battery_80';
     return 'battery_100';
   }
 
   @override
   Widget build(BuildContext context) {
+    if (isLoading && battery == null) {
+      return Text(
+        '배터리 조회 중…',
+        style: TextStyle(
+          color: AppColors.lightGray,
+          fontSize: 12,
+          fontWeight: AppFontWeight.light,
+        ),
+      );
+    }
+
+    if (battery == null) {
+      return Text(
+        '배터리 —',
+        style: TextStyle(
+          color: AppColors.lightGray,
+          fontSize: 12,
+          fontWeight: AppFontWeight.light,
+        ),
+      );
+    }
+
     final label = isCharging ? '충전 중 $battery%' : '$battery%';
 
     return Row(

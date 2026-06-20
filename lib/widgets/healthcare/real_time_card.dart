@@ -1,11 +1,15 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart'; // ★ 추가
+import 'package:flutter/services.dart';
 import 'package:flutter_svg/svg.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/constants/colors.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/constants/fonts.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/enum/data_type.dart';
+import 'package:picnique_rosary_healthcare_smartring/providers/ring.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/ble_command_queue.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/ring_touch_mode_service.dart';
 import 'package:picnique_rosary_healthcare_smartring/util/measurement_error_message.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/button.dart';
+import 'package:provider/provider.dart';
 
 class RealTimeDataCard extends StatelessWidget {
   final String iconSvgPath, realTime;
@@ -26,10 +30,27 @@ class RealTimeDataCard extends StatelessWidget {
     this.onMeasureSuccess,
   });
 
-  // 공용 BLE 채널
-  static const MethodChannel _ble = MethodChannel(
-    'com.example.picnique_ring/ble',
-  );
+  // 공용 BLE 채널 — iOS에서는 BleCommandQueue로 직렬화해야 연결 후처리와 충돌하지 않는다.
+
+  static ManualMeasurementType _manualType(DataType dataType) {
+    switch (dataType) {
+      case DataType.HeartRate:
+        return ManualMeasurementType.heartRate;
+      case DataType.Oxygen:
+        return ManualMeasurementType.spo2;
+      case DataType.Stress:
+        return ManualMeasurementType.stress;
+      default:
+        return ManualMeasurementType.other;
+    }
+  }
+
+  static String _notReadyMessage(Ring ring) {
+    if (!ring.isConnected) {
+      return '스마트링이 연결되어 있지 않아요.\n설정에서 반지 연결을 확인해 주세요.';
+    }
+    return '반지 연결·준비가 완료된 후 측정해 주세요.\n잠시 후 다시 시도해 주세요.';
+  }
 
   static String _measuringDialogMessage(DataType dataType) {
     switch (dataType) {
@@ -47,9 +68,18 @@ class RealTimeDataCard extends StatelessWidget {
   Future<void> _handleMeasure(BuildContext context) async {
     HapticFeedback.lightImpact();
 
+    final ring = context.read<Ring>();
+    if (!ring.isConnected || !ring.sdkReady) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(_notReadyMessage(ring))),
+      );
+      return;
+    }
+
     // 어떤 측정을 호출할지 결정
     String method;
     Map<String, Object?> args = const {};
+    final manualType = _manualType(dataType);
     switch (dataType) {
       // 프로젝트 enum에 맞춰 조정하세요 ↓↓↓
       case DataType.HeartRate: // 심박
@@ -102,7 +132,10 @@ class RealTimeDataCard extends StatelessWidget {
 
     String okMsg = '측정 완료';
     try {
-      final res = await _ble.invokeMethod<dynamic>(method, args);
+      await RingTouchModeService.instance.pauseForManualMeasurement(
+        type: manualType,
+      );
+      final res = await BleCommandQueue.invoke<dynamic>(method, args);
 
       // 다이얼로그 닫기
       if (!context.mounted) return;
@@ -167,6 +200,10 @@ class RealTimeDataCard extends StatelessWidget {
             '측정 중 문제가 발생했어요.\n잠시 후 다시 시도해 주세요.',
           ),
         ),
+      );
+    } finally {
+      await RingTouchModeService.instance.resumeAfterManualMeasurement(
+        type: manualType,
       );
     }
   }

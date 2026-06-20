@@ -142,6 +142,84 @@ class BleBridge(private val appContext: Context) {
 
     private var simpleTouchLoggingEnabled = false
 
+    val isSimpleTouchLoggingEnabled: Boolean
+        get() = simpleTouchLoggingEnabled
+
+    private fun sendTouchControlCommand(appType: Int, touchOn: Boolean, strength: Int) {
+        CommandHandle.getInstance().executeReqCmdNoCallback(
+            TouchControlReq.getWriteInstance(
+                appType,
+                touchOn,
+                strength
+            )
+        )
+    }
+
+    /// 수동 건강 측정 직전: 터치 모드(3·8)를 끔
+    private fun releaseTouchModeForManualMeasurement() {
+        if (simpleTouchLoggingEnabled) {
+            simpleTouchLoggingEnabled = false
+        }
+        try {
+            sendTouchControlCommand(appType = 0, touchOn = false, strength = 1)
+            Log.i(TAG, "releaseTouchModeForManualMeasurement: appType=0")
+        } catch (_: Throwable) { }
+    }
+
+    private fun mapSpo2DeviceError(errCode: Int): Triple<String, String, Map<String, Any>> {
+        val details = mapOf("deviceErrCode" to errCode)
+        return when (errCode) {
+            1 -> Triple("SPO2_MANUAL_BUSY", "Device errCode=1 (busy)", details)
+            2 -> Triple("SPO2_MANUAL_SENSOR_ERR", "Device errCode=2 (sensor)", details)
+            3, 5 -> Triple("SPO2_MANUAL_WEAR", "Device errCode=$errCode (not worn)", details)
+            4 -> Triple("SPO2_MANUAL_TIMEOUT", "Device errCode=4 (device timeout)", details)
+            else -> Triple("SPO2_MANUAL_DEVICE_ERR", "Device errCode=$errCode", details)
+        }
+    }
+
+    private fun mapHrDeviceError(errCode: Int): Triple<String, String, Map<String, Any>> {
+        val details = mapOf("deviceErrCode" to errCode)
+        return when (errCode) {
+            1 -> Triple(
+                "HR_MANUAL_BUSY",
+                "Device errCode=1 (busy)",
+                details,
+            )
+            2 -> Triple(
+                "HR_MANUAL_SENSOR_ERR",
+                "Device errCode=2 (sensor)",
+                details,
+            )
+            3, 5 -> Triple(
+                "HR_MANUAL_WEAR",
+                "Device errCode=$errCode (not worn)",
+                details,
+            )
+            4 -> Triple(
+                "HR_MANUAL_DEVICE_TIMEOUT",
+                "Device errCode=4 (device timeout)",
+                details,
+            )
+            else -> Triple(
+                "HR_MANUAL_DEVICE_ERR",
+                "Device errCode=$errCode",
+                details,
+            )
+        }
+    }
+
+    fun setRingTouchMode(appType: Int, touchOn: Boolean, strength: Int, result: MethodChannel.Result) {
+        try {
+            sendTouchControlCommand(appType = appType, touchOn = touchOn, strength = strength)
+            simpleTouchLoggingEnabled = appType == 3 && touchOn
+            Log.i(TAG, "setRingTouchMode: appType=$appType touchOn=$touchOn strength=$strength")
+            result.success(true)
+        } catch (t: Throwable) {
+            Log.e(TAG, "setRingTouchMode failed", t)
+            result.error("TOUCH_MODE_FAIL", t.message, null)
+        }
+    }
+
     private var realtimeListener: DeviceNotifyListener? = null
 
     fun getTouchCount(): Int {
@@ -193,10 +271,6 @@ class BleBridge(private val appContext: Context) {
     }
 
     fun connectDirectly(deviceAddress: String?, result: MethodChannel.Result) {
-        reconnectKnownDevice(deviceAddress, result)
-    }
-
-    fun reconnectKnownDevice(deviceAddress: String?, result: MethodChannel.Result) {
         if (deviceAddress.isNullOrBlank()) {
             result.error("BAD_ARGS", "deviceAddress is required", null)
             return
@@ -214,6 +288,41 @@ class BleBridge(private val appContext: Context) {
             result.success(true)
         } catch (t: Throwable) {
             result.error("CONNECT_FAIL", t.message, null)
+        }
+    }
+
+    fun reconnectKnownDevice(deviceAddress: String?, result: MethodChannel.Result) {
+        connectDirectly(deviceAddress, result)
+    }
+
+    fun connectWithScan(deviceAddress: String?, result: MethodChannel.Result) {
+        if (deviceAddress.isNullOrBlank()) {
+            result.error("BAD_ARGS", "deviceAddress is required", null)
+            return
+        }
+        try {
+            val app = (appContext.applicationContext as Application)
+            BleOperateManager.getInstance(app).connectWithScan(deviceAddress)
+            emitter.emit(
+                mapOf(
+                    "type" to "connected",
+                    "address" to deviceAddress,
+                    "name" to ""
+                )
+            )
+            result.success(true)
+        } catch (t: Throwable) {
+            result.error("CONNECT_SCAN_FAIL", t.message, null)
+        }
+    }
+
+    fun setNeedConnect(needConnect: Boolean, result: MethodChannel.Result) {
+        try {
+            val app = (appContext.applicationContext as Application)
+            BleOperateManager.getInstance(app).setNeedConnect(needConnect)
+            result.success(true)
+        } catch (t: Throwable) {
+            result.error("SET_NEED_CONNECT_FAIL", t.message, null)
         }
     }
 
@@ -488,6 +597,22 @@ class BleBridge(private val appContext: Context) {
             BleOperateManager.getInstance().addOutDeviceListener(ListenerKey.All, listener)
 
             realtimeListener = listener
+
+            if (simpleTouchLoggingEnabled) {
+                try {
+                    sendTouchControlCommand(appType = 3, touchOn = true, strength = 1)
+                    Log.i(TAG, "re-applied rosary touch mode (3) after realtime notifications")
+                } catch (t: Throwable) {
+                    Log.w(TAG, "touch re-apply after realtime failed", t)
+                }
+            } else {
+                try {
+                    sendTouchControlCommand(appType = 8, touchOn = true, strength = 1)
+                    Log.i(TAG, "re-applied HR measure touch mode (8) after realtime notifications")
+                } catch (t: Throwable) {
+                    Log.w(TAG, "HR touch mode re-apply after realtime failed", t)
+                }
+            }
 
             result.success(true)
         } catch (t: Throwable) {
@@ -1053,9 +1178,14 @@ class BleBridge(private val appContext: Context) {
 
 
     fun syncManualHeartRate(result: MethodChannel.Result) {
+        releaseTouchModeForManualMeasurement()
+
         val main = android.os.Handler(android.os.Looper.getMainLooper())
         val replied = java.util.concurrent.atomic.AtomicBoolean(false)
         val TIMEOUT_MS = 45_000L
+        val MIN_MEASURE_MS = 5_000L
+        val startedAt = System.currentTimeMillis()
+        var latestBpm = 0
     
         // 기존:
 // fun u8(b: Byte?): Int = (b?.toInt() ?: 0) and 0xFF
@@ -1092,13 +1222,28 @@ class BleBridge(private val appContext: Context) {
         fun finishOk(payload: Map<String, Any?>) {
             if (replied.compareAndSet(false, true)) main.post { result.success(payload) }
         }
-        fun finishErr(code: String, msg: String?) {
-            if (replied.compareAndSet(false, true)) main.post { result.error(code, msg, null) }
+        fun finishErr(code: String, msg: String?, details: Any? = null) {
+            if (replied.compareAndSet(false, true)) {
+                main.post { result.error(code, msg, details) }
+            }
         }
     
         // 타임아웃 워치독
         main.postDelayed({
-            finishErr("HR_MANUAL_TIMEOUT", "no final manual HR within ${TIMEOUT_MS}ms")
+            if (latestBpm > 0 && System.currentTimeMillis() - startedAt >= MIN_MEASURE_MS) {
+                finishOk(
+                    mapOf(
+                        "type" to 1,
+                        "errCode" to 0,
+                        "hr" to latestBpm,
+                        "rri" to 0,
+                        "sbp" to 0,
+                        "dbp" to 0,
+                    )
+                )
+            } else {
+                finishErr("HR_MANUAL_TIMEOUT", "no final manual HR within ${TIMEOUT_MS}ms")
+            }
         }, TIMEOUT_MS)
     
         try {
@@ -1130,17 +1275,29 @@ class BleBridge(private val appContext: Context) {
                             "HR(manual) parsed: type=$type err=$errCode bpm=$bpm sbp=$sbp dbp=$dbp rri=$rri status=$status"
                         )
     
-                        // 1) 장치 에러
+                        // 1) 장치 에러 — status=0(진행) 프레임은 무시 (일부 펌웨어가 초기 errCode 보냄)
                         if (errCode != 0) {
-                            return finishErr("HR_MANUAL_DEVICE_ERR", "Device errCode=$errCode")
+                            if (status == 0 && errCode == 1) {
+                                return
+                            }
+                            val (code, msg, details) = mapHrDeviceError(errCode)
+                            return finishErr(code, msg, details)
                         }
-    
-                        // 3) 심박(type=1) 최종 패킷 판단
+
+                        // 3) 심박(type=1) 최종 패킷 판단 — 캐시값 즉시 반환 방지
+                        when (status) {
+                            0 -> return
+                            1 -> { /* completed */ }
+                            else -> {
+                                if (System.currentTimeMillis() - startedAt < MIN_MEASURE_MS) {
+                                    return
+                                }
+                            }
+                        }
                         if (bpm > 0) {
-                            // status 미노출 펌웨어 -> bpm>0이면 완료로 간주
-                            val isFinal = if (status >= 0) status == 1 else bpm > 0
-                            if (!isFinal) return
-    
+                            latestBpm = bpm
+                        }
+                        if (bpm in 30..220) {
                             return finishOk(
                                 mapOf(
                                     "type" to type,
@@ -1152,13 +1309,13 @@ class BleBridge(private val appContext: Context) {
                                 )
                             )
                         }
-    
+
                         // 4) 다른 타입(혈압/SpO2 등)은 여기선 성공으로 취급하지 않음(무시)
                         // 필요하면 type==2/3 처리 분기 추가하세요.
                     }
                 })
         } catch (t: Throwable) {
-            finishErr("HR_MANUAL_FAIL", t.message)
+            finishErr("HR_MANUAL_START_FAIL", t.message ?: "manualModeHeart threw")
         }
     }
     
@@ -1287,6 +1444,8 @@ class BleBridge(private val appContext: Context) {
 
         // ---- Manual SpO2 ----
     fun syncManualSpO2(result: MethodChannel.Result) {
+        releaseTouchModeForManualMeasurement()
+
         val main = android.os.Handler(android.os.Looper.getMainLooper())
         val replied = java.util.concurrent.atomic.AtomicBoolean(false)
         val TIMEOUT_MS = 45_000L
@@ -1321,8 +1480,10 @@ class BleBridge(private val appContext: Context) {
         fun finishOk(payload: Map<String, Any?>) {
             if (replied.compareAndSet(false, true)) main.post { result.success(payload) }
         }
-        fun finishErr(code: String, msg: String?) {
-            if (replied.compareAndSet(false, true)) main.post { result.error(code, msg, null) }
+        fun finishErr(code: String, msg: String?, details: Any? = null) {
+            if (replied.compareAndSet(false, true)) {
+                main.post { result.error(code, msg, details) }
+            }
         }
 
         // 타임아웃 워치독
@@ -1354,9 +1515,13 @@ class BleBridge(private val appContext: Context) {
                             "SpO2(manual) parsed: type=$type err=$errCode spo2=$spo2 rri=$rri status=$status"
                         )
 
-                        // 1) 장치 에러
+                        // 1) 장치 에러 — status=0(진행) 프레임은 무시 (일부 펌웨어가 초기 errCode 보냄)
                         if (errCode != 0) {
-                            return finishErr("SPO2_MANUAL_DEVICE_ERR", "Device errCode=$errCode")
+                            if (status == 0 && errCode == 1) {
+                                return
+                            }
+                            val (code, msg, details) = mapSpo2DeviceError(errCode)
+                            return finishErr(code, msg, details)
                         }
 
                         // 3) 최종 프레임 판단 — status=0(진행) 무시, 캐시값 즉시 반환 방지
@@ -1390,7 +1555,7 @@ class BleBridge(private val appContext: Context) {
                     }
                 })
         } catch (t: Throwable) {
-            finishErr("SPO2_MANUAL_FAIL", t.message)
+            finishErr("SPO2_MANUAL_START_FAIL", t.message ?: "manualModeSpO2 threw")
         }
     }
 
@@ -1446,6 +1611,8 @@ class BleBridge(private val appContext: Context) {
 
     // ---- Manual Pressure (스트레스) ----
     fun syncManualPressure(result: MethodChannel.Result) {
+        releaseTouchModeForManualMeasurement()
+
         val main = android.os.Handler(android.os.Looper.getMainLooper())
         val replied = java.util.concurrent.atomic.AtomicBoolean(false)
         val TIMEOUT_MS = 45_000L
@@ -1801,15 +1968,7 @@ class BleBridge(private val appContext: Context) {
 
     fun enableSimpleTouchLogging(result: MethodChannel.Result) {
         try {
-            // 참고 앱(picnique_ring)과 동일: appType=3(묵주/赞念), strength=1
-            // 매번 TouchControl 재전송 (이전 세션/실시간 알림 후 모드가 풀릴 수 있음)
-            CommandHandle.getInstance().executeReqCmdNoCallback(
-                TouchControlReq.getWriteInstance(
-                    3,      // MSL praise / 묵주
-                    true,   // touch ON
-                    1       // sensitivity
-                )
-            )
+            sendTouchControlCommand(appType = 3, touchOn = true, strength = 1)
 
             QcRawReceiver.touchCount = 0
             simpleTouchLoggingEnabled = true
@@ -1822,23 +1981,10 @@ class BleBridge(private val appContext: Context) {
     }
 
     fun disableSimpleTouchLogging(result: MethodChannel.Result) {
-        if (!simpleTouchLoggingEnabled) {
-            // 이미 꺼져 있으면 다시 등록 안 함
-            result.success(true)
-            return
-        }
-
         try {
-            // 1) TouchControl을 "일반 모드(appType=0)"로 설정 (터치 모드=false)
-            CommandHandle.getInstance().executeReqCmdNoCallback(
-                TouchControlReq.getWriteInstance(
-                    0,      // appType: 0 = normal
-                    false,  // touch 모드 OFF
-                    1
-                )
-            )
-
+            sendTouchControlCommand(appType = 8, touchOn = true, strength = 1)
             simpleTouchLoggingEnabled = false
+            Log.i(TAG, "disableSimpleTouchLogging: restored appType=8")
             result.success(true)
         } catch (t: Throwable) {
             Log.e(TAG, "disableSimpleTouchLogging failed", t)

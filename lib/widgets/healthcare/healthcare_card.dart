@@ -155,9 +155,8 @@ class HealthCareCard extends StatelessWidget {
 
 class _DownTrianglePainter extends CustomPainter {
   final Color color;
-  final double radius;
 
-  _DownTrianglePainter({required this.color, this.radius = 1.5});
+  _DownTrianglePainter({required this.color});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -168,7 +167,7 @@ class _DownTrianglePainter extends CustomPainter {
 
     final w = size.width;
     final h = size.height;
-    final r = radius.clamp(0.0, 2.0);
+    const r = 1.5;
 
     final path = Path()
       ..moveTo(r, 0)
@@ -197,5 +196,5 @@ class _DownTrianglePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _DownTrianglePainter oldDelegate) =>
-      oldDelegate.color != color || oldDelegate.radius != radius;
+      oldDelegate.color != color;
 }

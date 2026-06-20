@@ -22,7 +22,7 @@ class AppDatabase extends _$AppDatabase {
 
   // 스키마 버전 ↑ (v2 → v3)
   @override
-  int get schemaVersion => 4;
+  int get schemaVersion => 5;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -46,6 +46,9 @@ class AppDatabase extends _$AppDatabase {
       }
       if (from < 4) {
         await m.createTable(rosarySessions);
+      }
+      if (from < 5) {
+        await m.addColumn(rosarySessions, rosarySessions.wydDedicated);
       }
     },
     beforeOpen: (details) async {
@@ -229,6 +232,23 @@ class AppDatabase extends _$AppDatabase {
     }
     q.orderBy([(t) => OrderingTerm(expression: t.startAt)]);
     return q.get();
+  }
+
+  Future<RosarySession?> latestUndedicatedRosarySession() {
+    final q = select(rosarySessions)
+      ..where((t) => t.wydDedicated.equals(false) & t.tapCount.isBiggerThanValue(0))
+      ..orderBy([
+        (t) => OrderingTerm(expression: t.endAt, mode: OrderingMode.desc),
+      ])
+      ..limit(1);
+    return q.getSingleOrNull();
+  }
+
+  Future<bool> markRosarySessionWydDedicated(int sessionId) async {
+    final updated = await (update(rosarySessions)
+          ..where((t) => t.id.equals(sessionId)))
+        .write(const RosarySessionsCompanion(wydDedicated: Value(true)));
+    return updated > 0;
   }
 }
 

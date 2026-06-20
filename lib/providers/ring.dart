@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/battery_notification_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -15,6 +17,8 @@ class Ring with ChangeNotifier {
   bool _isConnected = false;
   bool _isReconnecting = false;
   bool _isCharging = false;
+  bool _sdkReady = false;
+  bool _batteryFromRealtime = false;
   String? _savedName, _savedAddress;
 
   String id = "taiipa001";
@@ -27,6 +31,8 @@ class Ring with ChangeNotifier {
   bool get isConnected => _isConnected;
   bool get isReconnecting => _isReconnecting;
   bool get isCharging => _isCharging;
+  bool get sdkReady => _sdkReady;
+  bool get hasFreshBatteryFromDevice => _batteryFromRealtime;
   String? get savedName => _savedName;
   String? get savedAddress => _savedAddress;
   String? get accessToken => _accessToken;
@@ -59,13 +65,28 @@ class Ring with ChangeNotifier {
     );
   }
 
-  void setBatteryAndCharging(int? newBattery, bool? charging) {
+  void setSdkReady(bool ready) {
+    if (_sdkReady == ready) return;
+    _sdkReady = ready;
+    notifyListeners();
+  }
+
+  void setBatteryAndCharging(
+    int? newBattery,
+    bool? charging, {
+    bool fromRealtime = false,
+  }) {
     final prevCharging = _isCharging;
     final prevBattery = _battery;
     var changed = false;
 
-    if (newBattery != null && newBattery != _battery) {
-      _battery = newBattery;
+    if (fromRealtime) {
+      _batteryFromRealtime = true;
+    }
+
+    final normalized = _normalizeBatteryLevel(newBattery);
+    if (normalized != null && normalized != _battery) {
+      _battery = normalized;
       changed = true;
     }
     if (charging != null && charging != _isCharging) {
@@ -75,19 +96,26 @@ class Ring with ChangeNotifier {
     if (!changed) return;
 
     notifyListeners();
+    unawaited(persist());
 
     if (charging != null && charging != prevCharging) {
       BatteryNotificationService.onChargingState(
         isCharging: _isCharging,
         battery: _battery,
       );
-    } else if (_isCharging && newBattery != null && newBattery != prevBattery) {
+    } else if (_isCharging && normalized != null && normalized != prevBattery) {
       BatteryNotificationService.onChargingProgress(_battery);
     }
 
-    if (newBattery != null && !_isCharging) {
-      BatteryNotificationService.onBatteryLevel(newBattery);
+    if (normalized != null && !_isCharging) {
+      BatteryNotificationService.onBatteryLevel(normalized);
     }
+  }
+
+  int? _normalizeBatteryLevel(int? value) {
+    if (value == null) return null;
+    if (value < 1 || value > 100) return null;
+    return value;
   }
 
   void setIsConnected(bool newIsConnected) {
@@ -117,8 +145,16 @@ class Ring with ChangeNotifier {
     _address = address;
     _isConnected = true;
     _isReconnecting = false;
+    _sdkReady = false;
+    _batteryFromRealtime = false;
     _savedName = name;
     _savedAddress = address;
+    if (_battery == null) {
+      final prefs = await SharedPreferences.getInstance();
+      if (prefs.containsKey(_kBattery)) {
+        _battery = prefs.getInt(_kBattery);
+      }
+    }
     await _persistSavedDevice();
     await persist();
     notifyListeners();
@@ -127,9 +163,10 @@ class Ring with ChangeNotifier {
   Future<void> markDisconnected({bool forgetSaved = false}) async {
     _name = null;
     _address = null;
-    _battery = null;
     _isConnected = false;
     _isCharging = false;
+    _sdkReady = false;
+    _batteryFromRealtime = false;
     _accessToken = null;
     if (forgetSaved) {
       _savedName = null;
@@ -152,6 +189,8 @@ class Ring with ChangeNotifier {
     _isConnected = false;
     _isReconnecting = false;
     _isCharging = false;
+    _sdkReady = false;
+    _batteryFromRealtime = false;
     _accessToken = null;
     notifyListeners();
   }

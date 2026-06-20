@@ -114,6 +114,7 @@ final class IosBleBridge: NSObject {
   private var scanPrefix: String?
   private var pendingConnect: FlutterResult?
   private var pendingDisconnect: FlutterResult?
+  private var pendingFreshReconnectPeripheral: CBPeripheral?
   private var connectTimeoutWork: DispatchWorkItem?
 
   private var touchCount: Int = 0
@@ -512,7 +513,22 @@ final class IosBleBridge: NSObject {
     peripheral.delegate = self
 
     if peripheral.state == .connected {
-      attachConnectedPeripheral(peripheral, result: result)
+      // OS는 connected지만 SDK 명령(setTime/측정)이 실패하는 '유령 연결'이 잦다.
+      // 한 번 끊었다가 didConnect 경로로 재연결해 SDK 핸드셰이크를 새로 맞춘다.
+      pendingFreshReconnectPeripheral = peripheral
+      pendingConnect = result
+      QCSDKManager.shareInstance().removeAllPeripheral()
+      central.cancelPeripheralConnection(peripheral)
+      connectTimeoutWork?.cancel()
+      let work = DispatchWorkItem { [weak self] in
+        guard let self = self else { return }
+        guard let pending = self.pendingConnect else { return }
+        pending(FlutterError(code: "CONNECT_TIMEOUT", message: "fresh reconnect timeout", details: nil))
+        self.pendingConnect = nil
+        self.pendingFreshReconnectPeripheral = nil
+      }
+      connectTimeoutWork = work
+      DispatchQueue.main.asyncAfter(deadline: .now() + 60, execute: work)
       return
     }
 
@@ -546,22 +562,6 @@ final class IosBleBridge: NSObject {
     }
 
     return central.retrievePeripherals(withIdentifiers: [uuid]).first
-  }
-
-  private func attachConnectedPeripheral(_ peripheral: CBPeripheral, result: @escaping FlutterResult) {
-    QCSDKManager.shareInstance().add(peripheral) { [weak self] ok in
-      guard let self = self else { return }
-      if ok {
-        self.emit([
-          "type": "connected",
-          "address": peripheral.identifier.uuidString,
-          "name": peripheral.name ?? ""
-        ])
-        result(true)
-      } else {
-        result(FlutterError(code: "SDK_ATTACH_FAIL", message: "failed to attach peripheral", details: nil))
-      }
-    }
   }
 
   private func disconnect(result: @escaping FlutterResult) {
@@ -978,14 +978,8 @@ final class IosBleBridge: NSObject {
   }
 
   private func syncTodaySport(result: @escaping FlutterResult) {
-    let formatter = DateFormatter()
-    formatter.locale = Locale(identifier: "en_US_POSIX")
-    formatter.timeZone = TimeZone.current
-    formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
-
-    QCSDKCmdCreator.getOneDaySport(by: 0, success: { model in
-      let date = formatter.date(from: model.happenDate) ?? Date()
-      let comps = Calendar.current.dateComponents([.year, .month, .day], from: date)
+    QCSDKCmdCreator.getCurrentSportSucess({ model in
+      let comps = Calendar.current.dateComponents([.year, .month, .day], from: Date())
 
       result([
         "daysAgo": 0,
@@ -999,7 +993,7 @@ final class IosBleBridge: NSObject {
         "sportDuration": Int(model.activeTime),
         "sleepDuration": 0
       ])
-    }, fail: {
+    }, failed: {
       result(FlutterError(code: "SPORT_TODAY_FAIL", message: "today sport failed", details: nil))
     })
   }
@@ -1654,19 +1648,15 @@ extension IosBleBridge: CBCentralManagerDelegate {
   func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
     connectTimeoutWork?.cancel()
     connectTimeoutWork = nil
-    // SDK에 퍼리퍼럴 등록 → setTime 후 Flutter에 연결 완료 통지
+    // picnique_ring과 동일: SDK add 후 connected 통지. setTime은 Flutter에서 1회만.
     QCSDKManager.shareInstance().add(peripheral) { [weak self] _ in
       guard let self = self else { return }
-      QCSDKCmdCreator.setTime(Date(), success: { _ in
-        self.finishPendingConnect()
-      }, failed: {
-        // setTime 실패해도 연결 자체는 유지
-        self.finishPendingConnect()
-      })
+      self.finishPendingConnect()
     }
   }
 
   private func finishPendingConnect() {
+    pendingFreshReconnectPeripheral = nil
     if let peripheral = connected {
       emit([
         "type": "connected",
@@ -1687,6 +1677,15 @@ extension IosBleBridge: CBCentralManagerDelegate {
 
   func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
     QCSDKManager.shareInstance().remove(peripheral)
+
+    if let fresh = pendingFreshReconnectPeripheral,
+       fresh.identifier == peripheral.identifier {
+      connected = fresh
+      fresh.delegate = self
+      central.connect(fresh, options: nil)
+      return
+    }
+
     connected = nil
 
     if let pending = pendingDisconnect {

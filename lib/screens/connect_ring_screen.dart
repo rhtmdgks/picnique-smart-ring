@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'dart:io' show Platform;
+import 'package:picnique_rosary_healthcare_smartring/services/ble_command_queue.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_connection_service.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_live_activity.dart';
 import 'package:picnique_rosary_healthcare_smartring/util/BLERealtimeLogger.dart';
@@ -16,6 +17,7 @@ import 'package:picnique_rosary_healthcare_smartring/widgets/setting/ring_connec
 import 'package:picnique_rosary_healthcare_smartring/widgets/setting/ring_connect_status_card.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/sub_app_bar.dart';
 import '../util/BLEUtil.dart'; // ensureBluetoothOn, printBattery 등
+import '../util/ring_scan_message.dart';
 
 // ─────────────────────────────────────────────────────────────
 // (선택) RingConnectListCard 내부에서 아이템 탭 시 호출할 전역 함수
@@ -39,9 +41,6 @@ class ConnectRingSettingScreen extends StatefulWidget {
 }
 
 class _ConnectRingSettingScreenState extends State<ConnectRingSettingScreen> {
-  static const MethodChannel _platform = MethodChannel(
-    'com.example.picnique_ring/ble',
-  );
   static const EventChannel _eventChannel = EventChannel(
     'com.example.picnique_ring/ble_events',
   );
@@ -54,6 +53,7 @@ class _ConnectRingSettingScreenState extends State<ConnectRingSettingScreen> {
 
   bool _isScanning = false;
   bool _connecting = false;
+  int _discoveredDuringScan = 0;
   String? _connectingDeviceName;
 
   @override
@@ -99,6 +99,7 @@ class _ConnectRingSettingScreenState extends State<ConnectRingSettingScreen> {
     await _stopScanOnly();
     setState(() {
       _isScanning = true;
+      _discoveredDuringScan = 0;
       _scanResults.clear();
       _connectList = [];
     });
@@ -112,6 +113,7 @@ class _ConnectRingSettingScreenState extends State<ConnectRingSettingScreen> {
           final addr = (event['address'] ?? '') as String;
           final name = (event['name'] ?? '') as String;
           if (addr.isEmpty) return;
+          _discoveredDuringScan++;
           final map = {
             'name': name.isNotEmpty ? name : '(이름 없음)',
             'address': addr,
@@ -123,15 +125,20 @@ class _ConnectRingSettingScreenState extends State<ConnectRingSettingScreen> {
           });
         }
       });
+      const scanTimeout = Duration(seconds: 10);
       try {
-        await _platform.invokeMethod('startScan', <String, dynamic>{
+        await BleCommandQueue.invoke('startScan', <String, dynamic>{
           'namePrefix': null, // uuidString 기준으로 사용
-          'timeoutMs': 10000,
+          'timeoutMs': scanTimeout.inMilliseconds,
         });
+        // iOS 네이티브 startScan은 스캔 시작 직후 즉시 true를 반환한다.
+        // UI가 조기 종료되지 않도록 전체 탐색 시간만큼 대기한다.
+        await Future<void>.delayed(scanTimeout);
       } catch (e) {
         debugPrint('iOS startScan error: $e');
       } finally {
-        if (mounted) setState(() => _isScanning = false);
+        await _stopScanOnly();
+        _finishScan();
       }
     } else {
       await FlutterBluePlus.stopScan();
@@ -154,6 +161,7 @@ class _ConnectRingSettingScreenState extends State<ConnectRingSettingScreen> {
           _scanResults
             ..clear()
             ..addAll(results);
+          _discoveredDuringScan = results.length;
           final scanned = _scanResults.map((r) {
             final name = _deviceName(r);
             final addr = _deviceAddress(r.device) ?? '(unknown)';
@@ -166,9 +174,21 @@ class _ConnectRingSettingScreenState extends State<ConnectRingSettingScreen> {
       // 정확한 이름 일치 대신 전체 스캔을 노출해 링을 놓치지 않는다(이름 편차 대응).
       await FlutterBluePlus.startScan(
         timeout: const Duration(seconds: 10),
-      ).whenComplete(() {
-        if (mounted) setState(() => _isScanning = false);
-      });
+      ).whenComplete(_finishScan);
+    }
+  }
+
+  void _finishScan() {
+    if (!mounted) return;
+    setState(() => _isScanning = false);
+    if (_discoveredDuringScan == 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(ringScanNotFoundMessage),
+          behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+        ),
+      );
     }
   }
 
@@ -200,7 +220,7 @@ class _ConnectRingSettingScreenState extends State<ConnectRingSettingScreen> {
   Future<void> _stopScanOnly() async {
     if (Platform.isIOS) {
       try {
-        await _platform.invokeMethod('stopScan');
+        await BleCommandQueue.invoke('stopScan');
       } catch (_) {}
       await _iosScanSub?.cancel();
       _iosScanSub = null;
@@ -216,9 +236,10 @@ class _ConnectRingSettingScreenState extends State<ConnectRingSettingScreen> {
 
   // 스캔 중단 + 실제 연결 해제(네이티브/포그라운드/실시간). 명시적 해제에서만 사용.
   Future<void> _fullDisconnect() async {
+    final liveActivity = context.read<RingLiveActivity>();
     await _stopScanOnly();
     try {
-      await _platform.invokeMethod('disconnect');
+      await BleCommandQueue.invoke('disconnect');
     } catch (_) {}
     try {
       const fgChannel = MethodChannel(
@@ -227,7 +248,7 @@ class _ConnectRingSettingScreenState extends State<ConnectRingSettingScreen> {
       await fgChannel.invokeMethod('stopService');
     } catch (_) {}
     try {
-      await context.read<RingLiveActivity>().stop();
+      await liveActivity.stop();
     } catch (_) {}
     try {
       await BleRealtimeLogger.stop();
@@ -241,6 +262,7 @@ class _ConnectRingSettingScreenState extends State<ConnectRingSettingScreen> {
 
     final ring = context.read<Ring>();
     final sync = context.read<RingSyncController>();
+    final liveActivity = context.read<RingLiveActivity>();
     try {
       debugPrint('[CONNECT] start for $address');
       await _stopScanOnly();
@@ -263,7 +285,7 @@ class _ConnectRingSettingScreenState extends State<ConnectRingSettingScreen> {
         address: address,
         deviceName: deviceName,
         ring: ring,
-        liveActivity: context.read<RingLiveActivity>(),
+        liveActivity: liveActivity,
         sync: sync,
       );
 
@@ -338,11 +360,13 @@ class _ConnectRingSettingScreenState extends State<ConnectRingSettingScreen> {
                     RingConnectStatusCard(
                       isConnecting: _connecting,
                       isScanning: _isScanning,
+                      discoveredCount: _discoveredDuringScan,
                       startScan: _startScan,
                     ),
                     const SizedBox(height: 16),
                     RingConnectListCard(
                       connectList: _connectList,
+                      isScanning: _isScanning,
                       onConnect: connectByAddress,
                     ),
                   ],

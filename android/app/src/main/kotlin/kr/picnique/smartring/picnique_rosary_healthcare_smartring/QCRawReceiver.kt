@@ -12,23 +12,30 @@ class QcRawReceiver(
 
     companion object {
         var touchCount: Int = 0
+
+        /** MSL 묵주(0x7a) 또는 레거시(0x73 0x25) 터치 패킷 */
+        fun isTouchPacket(value: ByteArray): Boolean {
+            if (value.isEmpty()) return false
+            val b0 = value[0].toInt() and 0xFF
+            if (b0 == 0x7a) return true // ODM_DFU_Operation_MSLPrayer
+            if (value.size >= 2) {
+                val b1 = value[1].toInt() and 0xFF
+                if (b0 == 0x73 && b1 == 0x25) return true
+            }
+            return false
+        }
     }
 
     override fun onReceive(context: Context?, intent: Intent?) {
         if (intent == null) return
-
         if (intent.action != "com.qc.characteristic_changed_qc") return
+        if (!bridge.isSimpleTouchLoggingEnabled) return
 
         val value = intent.getByteArrayExtra("VALUE") ?: return
+        if (!isTouchPacket(value)) return
 
-        // 🔥 여기 조건만 추가하면 됨
-        if (value[0] != 0x73.toByte() || value[1] != 0x25.toByte()) {
-            // 73 25로 시작하지 않으면 무시
-            return
-        }
         touchCount += 1
 
-        // 그냥 원본 확인용 로그
         val hex = value.joinToString(" ") { String.format("%02X", it) }
         Log.d("QcRawReceiver", "RAW = $hex, touchCount = $touchCount")
         bridge.onRingTouched(touchCount, hex)

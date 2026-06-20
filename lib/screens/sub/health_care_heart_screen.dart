@@ -1,6 +1,7 @@
+import 'dart:async';
+
 import 'package:drift/drift.dart' hide Column;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/constants/colors.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/constants/fonts.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/enum/bar.dart';
@@ -15,6 +16,8 @@ import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/heart_ra
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/real_time_card.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/charts/health_chart_card.dart';
 import 'package:provider/provider.dart';
+import 'package:picnique_rosary_healthcare_smartring/providers/ring.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/ble_command_queue.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/health_live_metrics.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/sub_app_bar.dart';
 
@@ -48,7 +51,8 @@ class _HealthCareHeartScreenState extends State<HealthCareHeartScreen> {
   String _latestBpmText = "-"; // "84" 등
   bool _latestLoading = false;
   int _chartRefreshKey = 0;
-  final platform = MethodChannel('com.example.picnique_ring/ble');
+  bool _hrSyncStarted = false;
+  Ring? _ring;
 
   /// 날짜/범위와 무관하게 한 번만 로드해 유지
   late final Future<String> _healthMessageFuture = Future.wait([
@@ -78,7 +82,32 @@ class _HealthCareHeartScreenState extends State<HealthCareHeartScreen> {
   @override
   void initState() {
     super.initState();
-    _loadLatestHeart();
+    _loadLatestHeart(syncFromRing: false);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final next = context.read<Ring>();
+    if (!identical(_ring, next)) {
+      _ring?.removeListener(_onRingStateChanged);
+      _ring = next;
+      _ring!.addListener(_onRingStateChanged);
+      _onRingStateChanged();
+    }
+  }
+
+  @override
+  void dispose() {
+    _ring?.removeListener(_onRingStateChanged);
+    super.dispose();
+  }
+
+  void _onRingStateChanged() {
+    if (_ring?.sdkReady == true && !_hrSyncStarted) {
+      _hrSyncStarted = true;
+      unawaited(_loadLatestHeart(syncFromRing: true));
+    }
   }
 
   // "방금 전 / N분 전 / N시간 M분 전 / N일 전" 포맷
@@ -95,10 +124,14 @@ class _HealthCareHeartScreenState extends State<HealthCareHeartScreen> {
     return "$days일 전";
   }
 
-  Future<void> _loadLatestHeart() async {
+  Future<void> _loadLatestHeart({required bool syncFromRing}) async {
+    if (syncFromRing && _ring?.sdkReady != true) return;
+
     setState(() => _latestLoading = true);
     try {
-      await syncRecent3DaysHeartToDb(platform);
+      if (syncFromRing) {
+        await syncRecent3DaysHeartToDb(BleCommandQueue.channel);
+      }
       final db = DbManager.I.heartDB;
 
       // bpm > 0 인 최신 1건

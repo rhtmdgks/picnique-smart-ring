@@ -2,12 +2,11 @@
 
 import 'dart:async';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/ble_command_queue.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_live_activity.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/ring_touch_mode_service.dart';
 
 class RingTouchController with ChangeNotifier {
-  static const _method = MethodChannel('com.example.picnique_ring/ble');
-
   bool _listening = false;
   Timer? _timer;
   RingLiveActivity? _liveActivity;
@@ -20,20 +19,35 @@ class RingTouchController with ChangeNotifier {
 
   bool get isListening => _listening;
 
-  /// 터치 모드 켜고 네이티브 카운트를 폴링한다.
-  /// [liveActivity]가 있으면 BLE 이벤트(`ringTouch`)도 함께 수신한다.
-  Future<void> start({
-    RingLiveActivity? liveActivity,
-    int appType = 2,
-    int strength = 7,
-  }) async {
+  /// 묵주 기록용 터치 모드(3) 켜고 네이티브 카운트를 폴링한다.
+  Future<void> start({RingLiveActivity? liveActivity}) async {
     if (_listening) return;
+
+    tapCount = 0;
+    _listening = true;
+
+    try {
+      await RingTouchModeService.instance.enterRosaryRecording();
+      debugPrint('[TOUCH] rosary touch mode (3) enabled');
+    } catch (e) {
+      debugPrint('[TOUCH] enterRosaryRecording failed: $e');
+      _listening = false;
+      rethrow;
+    }
 
     _liveActivity = liveActivity;
     if (_liveActivity != null) {
       if (!_liveActivity!.isTracking) {
         await _liveActivity!.start();
       }
+      try {
+        await RingTouchModeService.instance.enterRosaryRecording();
+        debugPrint('[TOUCH] re-enabled rosary mode after live activity');
+      } catch (e) {
+        debugPrint('[TOUCH] re-enable after live activity failed: $e');
+      }
+
+      _liveActivity!.resetTouchCount();
       _liveListener = () {
         final count = _liveActivity!.touchCount;
         if (count != tapCount) {
@@ -44,19 +58,6 @@ class RingTouchController with ChangeNotifier {
       _liveActivity!.addListener(_liveListener!);
     }
 
-    tapCount = 0;
-    _liveActivity?.resetTouchCount();
-    _listening = true;
-
-    try {
-      await _method.invokeMethod('enableSimpleTouchLogging');
-      debugPrint('[TOUCH] enableSimpleTouchLogging ok');
-    } catch (e) {
-      debugPrint('[TOUCH] enableSimpleTouchLogging failed: $e');
-      _listening = false;
-      rethrow;
-    }
-
     startPolling();
   }
 
@@ -65,7 +66,7 @@ class RingTouchController with ChangeNotifier {
     _timer = Timer.periodic(const Duration(milliseconds: 100), (timer) async {
       if (!_listening) return;
       try {
-        final count = await _method.invokeMethod<int>('getRingTouchCount');
+        final count = await BleCommandQueue.invoke<int>('getRingTouchCount');
         if (count != null && count != tapCount) {
           tapCount = count;
           _liveActivity?.syncTouchCount(count);
@@ -89,9 +90,9 @@ class RingTouchController with ChangeNotifier {
     stopPolling();
 
     try {
-      await _method.invokeMethod('disableSimpleTouchLogging');
+      await RingTouchModeService.instance.exitRosaryRecording();
     } catch (e) {
-      debugPrint('[TOUCH] disableSimpleTouchLogging error: $e');
+      debugPrint('[TOUCH] exitRosaryRecording error: $e');
     }
 
     if (_liveListener != null) {

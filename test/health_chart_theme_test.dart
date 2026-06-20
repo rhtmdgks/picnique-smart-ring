@@ -5,7 +5,6 @@ import 'package:picnique_rosary_healthcare_smartring/core/charts/health_chart_mo
 import 'package:picnique_rosary_healthcare_smartring/core/charts/health_chart_theme.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/enum/data_type.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/enum/toggle_range.dart';
-import 'package:picnique_rosary_healthcare_smartring/core/enum/data_type.dart';
 
 void main() {
   group('HealthChartTheme.computeYBounds', () {

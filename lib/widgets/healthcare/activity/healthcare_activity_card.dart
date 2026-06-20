@@ -77,7 +77,7 @@ class HealthCareActivityCard extends StatelessWidget {
                       children: [
                         Text(
                           calories != null
-                              ? (calories! / 1000.0).toString()
+                              ? (calories! / 1000.0).toStringAsFixed(1)
                               : '—',
                           style: TextStyle(
                             color: Colors.white,

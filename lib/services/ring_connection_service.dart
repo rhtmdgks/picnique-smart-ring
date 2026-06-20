@@ -4,16 +4,16 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/ring.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/ble_command_queue.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_background_keepalive.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_background_sync.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_live_activity.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/ring_touch_mode_service.dart';
 import 'package:picnique_rosary_healthcare_smartring/util/BLEUtil.dart';
 
 /// 저장된 반지 주소로 BLE 연결·실시간 추적을 수행한다.
 class RingConnectionService {
-  static const MethodChannel platform = MethodChannel(
-    'com.example.picnique_ring/ble',
-  );
+  static const MethodChannel platform = BleCommandQueue.channel;
   static const MethodChannel fgChannel = MethodChannel(
     'com.example.picnique_ring/foreground_service_channel',
   );
@@ -75,16 +75,32 @@ class RingConnectionService {
       }
 
       debugPrint('[CONNECT] connectDirectly begin ($address)');
-      await platform
-          .invokeMethod('connectDirectly', <String, dynamic>{
+      await BleCommandQueue
+          .invoke('connectDirectly', <String, dynamic>{
             'deviceAddress': address,
           })
           .timeout(const Duration(seconds: 60));
       debugPrint('[CONNECT] connectDirectly done');
 
-      await syncTimeAfterConnect();
+      if (Platform.isIOS) {
+        await Future<void>.delayed(const Duration(seconds: 2));
+      }
+
+      var sdkReady = await syncTimeAfterConnect();
+      if (!sdkReady && Platform.isIOS) {
+        await Future<void>.delayed(const Duration(seconds: 2));
+        sdkReady = await syncTimeAfterConnect();
+      }
 
       await ring.markConnected(name: deviceName, address: address);
+      ring.setSdkReady(sdkReady);
+
+      if (!sdkReady) {
+        debugPrint('[CONNECT] SDK not ready after setTime — skip auto monitoring');
+        return true;
+      }
+
+      RingTouchModeService.instance.onConnected();
 
       final ready = await _waitDeviceReady();
       if (!ready) {
@@ -132,7 +148,7 @@ class RingConnectionService {
     bool clearPersistOnFailure,
   ) async {
     try {
-      await platform.invokeMethod('disconnect');
+      await BleCommandQueue.invoke('disconnect');
     } catch (_) {}
     ring.setIsConnected(false);
     if (clearPersistOnFailure) {
@@ -141,14 +157,16 @@ class RingConnectionService {
     }
   }
 
-  static Future<void> syncTimeAfterConnect() async {
+  static Future<bool> syncTimeAfterConnect() async {
     try {
-      await platform
-          .invokeMethod('syncTimeAndGetCoreFeatures')
+      await BleCommandQueue
+          .invoke('syncTimeAndGetCoreFeatures')
           .timeout(const Duration(seconds: 15));
       debugPrint('[CONNECT] syncTime done');
+      return true;
     } catch (e) {
       debugPrint('[CONNECT] syncTime failed (non-fatal): $e');
+      return false;
     }
   }
 
@@ -156,8 +174,8 @@ class RingConnectionService {
     const attempts = 12;
     for (var i = 0; i < attempts; i++) {
       try {
-        final battery = await platform
-            .invokeMethod('getBatteryLevel')
+        final battery = await BleCommandQueue
+            .invoke('getBatteryLevel')
             .timeout(const Duration(seconds: 3));
         if (battery != null) return true;
       } catch (_) {}

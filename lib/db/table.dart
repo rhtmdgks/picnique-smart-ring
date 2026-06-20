@@ -79,4 +79,6 @@ class RosarySessions extends Table {
   DateTimeColumn get startAt => dateTime()(); // 기록 시작 시각
   DateTimeColumn get endAt => dateTime()(); // 기록 종료 시각
   IntColumn get tapCount => integer()(); // 세션 동안 감지된 터치 개수
+  BoolColumn get wydDedicated =>
+      boolean().withDefault(const Constant(false))(); // WYD 봉헌 여부
 }

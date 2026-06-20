@@ -255,7 +255,9 @@ class ActivityGraphCard extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
               Text(
-                value.toString(),
+                dataType == DataType.Kcal
+                    ? value.toStringAsFixed(1)
+                    : value.toString(),
                 style: TextStyle(
                   color: Colors.white,
                   fontSize: 22,

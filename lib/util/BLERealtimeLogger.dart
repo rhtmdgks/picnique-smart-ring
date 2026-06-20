@@ -3,6 +3,7 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/ble_command_queue.dart';
 
 /// BLE 실시간 이벤트 로깅 전용 파일
 /// 앱에서 백그라운드 없이 단순히 링이 보내주는 이벤트를 받아 로그 출력만 합니다.
@@ -12,9 +13,6 @@ import 'package:flutter/services.dart';
 class BleRealtimeLogger {
   static const EventChannel _eventChannel = EventChannel(
     'com.example.picnique_ring/ble_events',
-  );
-  static const MethodChannel _channel = MethodChannel(
-    'com.example.picnique_ring/ble',
   );
 
   static StreamSubscription<dynamic>? _subscription;
@@ -26,7 +24,7 @@ class BleRealtimeLogger {
     // 이미 구독 중이면 제거
     await stop();
 
-    await _channel.invokeMethod('enableRealtimeNotifications');
+    await BleCommandQueue.invoke('enableRealtimeNotifications');
 
     _subscription = _eventChannel.receiveBroadcastStream().listen(
       (event) {
@@ -44,7 +42,7 @@ class BleRealtimeLogger {
   /// 로깅 중지
   static Future<void> stop() async {
     await _subscription?.cancel();
-    await _channel.invokeMethod('disableRealtimeNotifications');
+    await BleCommandQueue.invoke('disableRealtimeNotifications');
     _subscription = null;
   }
 }

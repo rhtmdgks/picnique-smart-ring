@@ -5,11 +5,13 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/ring.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/ble_command_queue.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_background_keepalive.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_background_sync.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_connection_service.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_live_activity.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_pending_import.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/ring_touch_mode_service.dart';
 import 'package:picnique_rosary_healthcare_smartring/util/BLEUtil.dart';
 
 /// BLE 연결 유지·자동 재연결·충전/배터리 이벤트를 중앙에서 처리한다.
@@ -18,9 +20,6 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
   static final RingConnectionCoordinator instance =
       RingConnectionCoordinator._();
 
-  static const MethodChannel _ble = MethodChannel(
-    'com.example.picnique_ring/ble',
-  );
   static const MethodChannel _fg = MethodChannel(
     'com.example.picnique_ring/foreground_service_channel',
   );
@@ -38,6 +37,7 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
   bool _started = false;
   bool _isReconnecting = false;
   bool _manualDisconnectRequested = false;
+  bool _postConnectInFlight = false;
   int _backoffIndex = 0;
 
   Future<void> start({
@@ -125,12 +125,14 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
     unawaited(ring.markConnected(name: safeName, address: safeAddress));
-    unawaited(_afterConnectSuccess(safeAddress, safeName));
+    if (_isReconnecting || RingConnectionService.isConnecting) return;
+    unawaited(_runAfterConnectSuccess(safeAddress, safeName));
   }
 
   void _handleDisconnected() {
     final ring = _ring;
     if (ring == null) return;
+    RingTouchModeService.instance.onDisconnected();
     unawaited(_liveActivity?.stop());
     unawaited(ring.markDisconnected(forgetSaved: false));
     if (_manualDisconnectRequested) {
@@ -204,7 +206,7 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
       _backoffIndex = 0;
 
       await _readBattery(ring);
-      await _afterConnectSuccess(address, name);
+      await _runAfterConnectSuccess(address, name);
       debugPrint('[BLE][coordinator] reconnect success trigger=$trigger');
     } catch (e) {
       debugPrint('[BLE][coordinator] reconnect error trigger=$trigger err=$e');
@@ -217,10 +219,37 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _afterConnectSuccess(String address, String name) async {
+  Future<void> _runAfterConnectSuccess(String address, String name) async {
+    if (_postConnectInFlight) return;
+    _postConnectInFlight = true;
     try {
-      await RingConnectionService.syncTimeAfterConnect();
-    } catch (_) {}
+      await _afterConnectSuccess(address, name);
+    } finally {
+      _postConnectInFlight = false;
+    }
+  }
+
+  Future<void> _afterConnectSuccess(String address, String name) async {
+    final ring = _ring;
+    if (ring == null) return;
+
+    if (Platform.isIOS) {
+      await Future<void>.delayed(const Duration(seconds: 2));
+    }
+
+    var sdkReady = await RingConnectionService.syncTimeAfterConnect();
+    if (!sdkReady && Platform.isIOS) {
+      await Future<void>.delayed(const Duration(seconds: 2));
+      sdkReady = await RingConnectionService.syncTimeAfterConnect();
+    }
+    ring.setSdkReady(sdkReady);
+
+    if (!sdkReady) {
+      debugPrint('[CONNECT] SDK not ready — skip post-connect setup');
+      return;
+    }
+
+    RingTouchModeService.instance.onConnected();
 
     final live = _liveActivity;
     if (live != null) {
@@ -228,7 +257,7 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
     }
 
     try {
-      await _ble.invokeMethod('enableRealtimeNotifications');
+      await BleCommandQueue.invoke('enableRealtimeNotifications');
     } catch (_) {}
 
     try {
@@ -236,17 +265,21 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
     } catch (_) {}
 
     await RingBackgroundKeepalive.start(address: address, name: name);
+
+    if (Platform.isIOS) {
+      await Future<void>.delayed(const Duration(seconds: 1));
+    }
     await enableRingAutoMonitoring();
 
     final sync = _sync;
     if (sync != null && !Platform.isIOS) {
-      unawaited(sync.run(_ble));
+      unawaited(sync.run(BleCommandQueue.channel));
     }
   }
 
   Future<void> _readBattery(Ring ring) async {
     try {
-      final result = await _ble.invokeMethod<dynamic>('getBatteryLevel');
+      final result = await BleCommandQueue.invoke<dynamic>('getBatteryLevel');
       if (result is Map) {
         final level = _asInt(result['level'] ?? result['battery']);
         final charging = result['charging'] == true;
@@ -288,8 +321,8 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
 
   Future<bool> _connectAndVerify(String address) async {
     try {
-      final ok = await _ble
-          .invokeMethod<bool>('reconnectKnownDevice', <String, dynamic>{
+      final ok = await BleCommandQueue
+          .invoke<bool>('reconnectKnownDevice', <String, dynamic>{
             'deviceAddress': address,
           })
           .timeout(const Duration(seconds: 20));
@@ -297,16 +330,12 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
     } catch (_) {}
 
     try {
-      final ok = await _ble
-          .invokeMethod<bool>('connectDirectly', <String, dynamic>{
+      final ok = await BleCommandQueue
+          .invoke<bool>('connectDirectly', <String, dynamic>{
             'deviceAddress': address,
           })
           .timeout(const Duration(seconds: 30));
-      if (ok != true) return false;
-      await _ble
-          .invokeMethod<dynamic>('getBatteryLevel')
-          .timeout(const Duration(seconds: 12));
-      return true;
+      return ok == true;
     } catch (_) {
       return false;
     }

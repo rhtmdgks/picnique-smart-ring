@@ -127,6 +127,16 @@ String buildHeartRateMaximumMessage(HeartRateRangeStats stats, ToggleRange range
   return '$period 가장 높았을 때는 ${max}bpm이었어요.\n크게 벗어나지 않은 범위예요.';
 }
 
+/// 헬스케어 야간 구간 여부 (수면·HRV 공통 기준).
+///
+/// 야간 = 전일 18:00 ~ 당일 18:00. 당일 18:00 이전이면 야간 HRV 멘트,
+/// 18:00 이후면 주간(일반) HRV 멘트를 표시한다.
+bool isNightHrvPeriod([DateTime? now]) {
+  final local = now ?? DateTime.now();
+  final todayNightEnd = DateTime(local.year, local.month, local.day, 18, 0, 0);
+  return local.isBefore(todayNightEnd);
+}
+
 /// HRV – 지난 14일 평균 대비 오늘. 경우: <=-10% / -10~+10% / >=+10% / 데이터없음
 Future<String?> getHrvTrendMessage() async {
   final db = DbManager.I.appDB;

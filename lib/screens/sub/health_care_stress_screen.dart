@@ -41,7 +41,8 @@ class _HealthCareStressScreenState extends State<HealthCareStressScreen> {
 
   final platform = const MethodChannel('com.example.picnique_ring/ble');
 
-  late final Future<String> _healthMessageFuture = buildStressHrvMessages();
+  late final Future<StressHrvMessageResult> _healthMessageFuture =
+      buildStressHrvMessages();
 
   int _chartRefreshKey = 0;
 

@@ -7,7 +7,7 @@ import 'package:picnique_rosary_healthcare_smartring/core/constants/fonts.dart';
 import 'package:picnique_rosary_healthcare_smartring/screens/layouts/background_layout.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/sub_app_bar.dart';
 
-/// assets/legal/ 아래 마크다운 법적 문서를 표시한다.
+/// assets/legal/ 아래 마크다운 법적 문서(개인정보 처리방침·서비스 이용약관 등)를 표시한다.
 class LegalDocumentScreen extends StatefulWidget {
   const LegalDocumentScreen({
     super.key,
@@ -109,13 +109,12 @@ class _LegalDocumentScreenState extends State<LegalDocumentScreen> {
 
             return Scrollbar(
               child: SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+                padding: const EdgeInsets.only(top: 8, bottom: 32),
                 child: Container(
                   width: double.infinity,
-                  padding: const EdgeInsets.all(20),
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
                   decoration: BoxDecoration(
                     color: Colors.black.withValues(alpha: 0.6),
-                    borderRadius: BorderRadius.circular(16),
                   ),
                   child: MarkdownBody(
                     data: snapshot.data!,
