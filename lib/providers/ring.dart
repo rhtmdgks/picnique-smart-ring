@@ -141,12 +141,17 @@ class Ring with ChangeNotifier {
     required String name,
     required String address,
   }) async {
+    final sameDevice = _isConnected &&
+        _address != null &&
+        _address!.toLowerCase() == address.toLowerCase();
     _name = name;
     _address = address;
     _isConnected = true;
     _isReconnecting = false;
-    _sdkReady = false;
-    _batteryFromRealtime = false;
+    if (!sameDevice) {
+      _sdkReady = false;
+      _batteryFromRealtime = false;
+    }
     _savedName = name;
     _savedAddress = address;
     if (_battery == null) {

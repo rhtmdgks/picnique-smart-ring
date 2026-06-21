@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/ble_command_queue.dart';
 import 'package:picnique_rosary_healthcare_smartring/util/BLEUtil.dart';
 
 /// 반지에서 오늘 활동(걸음/칼로리/거리)을 실시간으로 받아 UI에 반영한다.
@@ -9,9 +10,6 @@ import 'package:picnique_rosary_healthcare_smartring/util/BLEUtil.dart';
 /// - Android: BLE 실시간 이벤트(`rtSportSummary`) + 주기적 `syncTodaySport` 폴링
 /// - iOS: SDK `currentStepInfo` 콜백 + 주기적 `syncTodaySport` 폴링
 class RingLiveActivity with ChangeNotifier {
-  static const MethodChannel _ble = MethodChannel(
-    'com.example.picnique_ring/ble',
-  );
   static const EventChannel _events = EventChannel(
     'com.example.picnique_ring/ble_events',
   );
@@ -19,7 +17,6 @@ class RingLiveActivity with ChangeNotifier {
   int _steps = 0;
   int _calories = 0;
   int _distanceM = 0;
-  int _touchCount = 0;
   bool _tracking = false;
 
   StreamSubscription<dynamic>? _subscription;
@@ -28,25 +25,13 @@ class RingLiveActivity with ChangeNotifier {
   int get steps => _steps;
   int get calories => _calories;
   int get distanceMeters => _distanceM;
-  int get touchCount => _touchCount;
   bool get isTracking => _tracking;
-
-  void resetTouchCount() {
-    _touchCount = 0;
-    notifyListeners();
-  }
-
-  void syncTouchCount(int count) {
-    if (count == _touchCount) return;
-    _touchCount = count;
-    notifyListeners();
-  }
 
   Future<void> start() async {
     if (_subscription != null) return;
 
     try {
-      await _ble.invokeMethod('enableRealtimeNotifications');
+      await BleCommandQueue.invoke<void>('enableRealtimeNotifications');
     } catch (e) {
       debugPrint('[LIVE_ACTIVITY] enableRealtime failed: $e');
     }
@@ -73,7 +58,7 @@ class RingLiveActivity with ChangeNotifier {
     _pollTimer = null;
 
     try {
-      await _ble.invokeMethod('disableRealtimeNotifications');
+      await BleCommandQueue.invoke<void>('disableRealtimeNotifications');
     } catch (_) {}
 
     _steps = 0;
@@ -84,7 +69,7 @@ class RingLiveActivity with ChangeNotifier {
   }
 
   Future<void> refresh() async {
-    final data = await fetchTodaySportFromRing(_ble);
+    final data = await fetchTodaySportFromRing(BleCommandQueue.channel);
     if (data == null) return;
 
     _apply(
@@ -98,13 +83,6 @@ class RingLiveActivity with ChangeNotifier {
     if (event is! Map) return;
 
     switch (event['type']) {
-      case 'ringTouch':
-        final count = _asInt(event['count']);
-        if (count > 0 && count != _touchCount) {
-          _touchCount = count;
-          notifyListeners();
-        }
-        break;
       case 'rtSportSummary':
         _apply(
           steps: _asInt(event['steps']),

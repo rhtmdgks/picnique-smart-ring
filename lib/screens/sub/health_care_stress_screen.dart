@@ -1,7 +1,7 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:drift/drift.dart' hide Column;
 import 'package:picnique_rosary_healthcare_smartring/core/constants/colors.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/constants/fonts.dart';
@@ -18,6 +18,8 @@ import 'package:provider/provider.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/health_data_refresh_notifier.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/health_live_metrics.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/sub_app_bar.dart';
+import 'package:picnique_rosary_healthcare_smartring/providers/ring.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/ble_command_queue.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/db/db_manager.dart';
 
 // y축 간격은 간단 고정
@@ -42,8 +44,10 @@ class _HealthCareStressScreenState extends State<HealthCareStressScreen> {
   // stress 라벨(unit) 동적 계산
   String get unit => stressToLabel((_latestStress ?? 0).toDouble());
 
-  final platform = const MethodChannel('com.example.picnique_ring/ble');
+  final platform = BleCommandQueue.channel;
   HealthDataRefreshNotifier? _healthRefresh;
+  Ring? _ring;
+  bool _stressSyncStarted = false;
 
   late final Future<StressHrvMessageResult> _healthMessageFuture =
       buildStressHrvMessages();
@@ -51,12 +55,19 @@ class _HealthCareStressScreenState extends State<HealthCareStressScreen> {
   @override
   void initState() {
     super.initState();
-    _loadLatestStress();
+    _loadLatestStress(skipSync: true);
   }
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    final nextRing = context.read<Ring>();
+    if (!identical(_ring, nextRing)) {
+      _ring?.removeListener(_onRingStateChanged);
+      _ring = nextRing;
+      _ring!.addListener(_onRingStateChanged);
+      _onRingStateChanged();
+    }
     final nextRefresh = context.read<HealthDataRefreshNotifier>();
     if (!identical(_healthRefresh, nextRefresh)) {
       _healthRefresh?.removeListener(_onHealthDataRefresh);
@@ -67,8 +78,16 @@ class _HealthCareStressScreenState extends State<HealthCareStressScreen> {
 
   @override
   void dispose() {
+    _ring?.removeListener(_onRingStateChanged);
     _healthRefresh?.removeListener(_onHealthDataRefresh);
     super.dispose();
+  }
+
+  void _onRingStateChanged() {
+    if (_ring?.sdkReady == true && !_stressSyncStarted) {
+      _stressSyncStarted = true;
+      unawaited(_loadLatestStress());
+    }
   }
 
   void _onHealthDataRefresh() {
@@ -94,7 +113,8 @@ class _HealthCareStressScreenState extends State<HealthCareStressScreen> {
   Future<void> _loadLatestStress({bool skipSync = false}) async {
     setState(() => _latestLoading = true);
     try {
-      if (!skipSync) {
+      // iOS: bulk stress sync는 pending import·수동 측정과 BLE 충돌
+      if (!skipSync && !Platform.isIOS) {
         await syncRecent7DaysStressToDb(platform);
       }
 

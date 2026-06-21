@@ -96,9 +96,9 @@ enum IosRingBackgroundPrefs {
 }
 
 enum IosRingMeasurementPolicy {
-  static let ringAutoHeartIntervalMinutes = 5
-  static let appCollectIntervalSec = 5 * 60
-  static let minCollectGapMs = 5 * 60 * 1000
+  static let ringAutoHeartIntervalMinutes = 10
+  static let appCollectIntervalSec = ringAutoHeartIntervalMinutes * 60
+  static let minCollectGapMs = appCollectIntervalSec * 1000
 }
 
 enum IosRingCollectionWatermark {
@@ -150,7 +150,26 @@ enum IosRingCollectionWatermark {
   }
 }
 
-// iOS counterpart of android BleBridge focused on scan/connect + touch counter.
+// iOS counterpart of android BleBridge focused on scan/connect + health sync.
+
+private final class HealthEventStreamHandler: NSObject, FlutterStreamHandler {
+  weak var bridge: IosBleBridge?
+
+  init(bridge: IosBleBridge) {
+    self.bridge = bridge
+  }
+
+  func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
+    bridge?.setHealthEventSink(events)
+    return nil
+  }
+
+  func onCancel(withArguments arguments: Any?) -> FlutterError? {
+    bridge?.setHealthEventSink(nil)
+    return nil
+  }
+}
+
 final class IosBleBridge: NSObject {
   static let bgTaskId = "kr.picnique.smartring.ring-sync"
   private static let centralRestoreId = "kr.picnique.smartring.central"
@@ -166,8 +185,11 @@ final class IosBleBridge: NSObject {
   private let chargingLiveActivityChannelName =
     "com.example.picnique_ring/charging_live_activity"
 
+  private let healthEventChannelName = "com.example.picnique_ring/health_events"
+
   private var methodChannel: FlutterMethodChannel!
   private var eventChannel: FlutterEventChannel!
+  private var healthEventChannel: FlutterEventChannel!
   private var fgChannel: FlutterMethodChannel!
   private var bgChannel: FlutterMethodChannel!
   private var chargingLiveActivityChannel: FlutterMethodChannel!
@@ -201,22 +223,33 @@ final class IosBleBridge: NSObject {
   private var backgroundCollectTimer: Timer?
   private var backgroundCollectInFlight = false
 
-  private var touchCount: Int = 0
-  private var touchObserver: NSObjectProtocol?
-  private var touchLoggingActive = false
   private var realtimeStepHooked = false
   private var realtimeBatteryHooked = false
   private var lastLowBatteryNotified: Int?
+  private var healthEventSink: FlutterEventSink?
   private let mainQueue = DispatchQueue.main
+
+  private func invokeFlutterResult(_ result: @escaping FlutterResult, _ value: Any?) {
+    if Thread.isMainThread {
+      result(value)
+    } else {
+      mainQueue.async { result(value) }
+    }
+  }
 
   init(messenger: FlutterBinaryMessenger) {
     super.init()
+
+    RingMeasurementSession.shared.delegate = self
 
     methodChannel = FlutterMethodChannel(name: methodChannelName, binaryMessenger: messenger)
     methodChannel.setMethodCallHandler(handle)
 
     eventChannel = FlutterEventChannel(name: eventChannelName, binaryMessenger: messenger)
     eventChannel.setStreamHandler(self)
+
+    healthEventChannel = FlutterEventChannel(name: healthEventChannelName, binaryMessenger: messenger)
+    healthEventChannel.setStreamHandler(HealthEventStreamHandler(bridge: self))
 
     fgChannel = FlutterMethodChannel(name: fgChannelName, binaryMessenger: messenger)
     fgChannel.setMethodCallHandler(handleForeground)
@@ -265,22 +298,20 @@ final class IosBleBridge: NSObject {
     backgroundCollectTimer = nil
   }
 
-  /// 연결된 상태에서 반지 저장소 → pending 큐 (Android collectAndQueue와 동일 목적).
+  func setHealthEventSink(_ sink: FlutterEventSink?) {
+    healthEventSink = sink
+  }
+
+  private func emitHealthDataReady() {
+    healthEventSink?(["type": "healthDataReady"])
+  }
+
+  /// 연결된 상태에서 반지 저장소 → pending 큐 (Session idle일 때만).
   private func collectHealthRecordsIfConnected(force: Bool) {
     guard IosRingBackgroundPrefs.isEnabled,
-          !backgroundCollectInFlight,
           connected?.state == .connected else { return }
 
-    let nowMs = Int(Date().timeIntervalSince1970 * 1000)
-    if !force && nowMs - IosRingCollectionWatermark.lastCollectMs() < IosRingMeasurementPolicy.minCollectGapMs {
-      return
-    }
-
-    backgroundCollectInFlight = true
-    collectPendingSamples { [weak self] in
-      self?.backgroundCollectInFlight = false
-      IosRingCollectionWatermark.markCollected()
-    }
+    RingMeasurementSession.shared.collectHealthIfIdle(force: force) { _ in }
   }
 
   private func startKeepaliveConnectionMaintenance() {
@@ -448,23 +479,6 @@ final class IosBleBridge: NSObject {
       reconnectKnownDevice(deviceAddress: addr, result: result)
     case "disconnect":
       disconnect(result: result)
-    case "getRingTouchCount":
-      result(touchCount)
-    case "enableSimpleTouchLogging":
-      enableSimpleTouchLogging(result: result)
-    case "disableSimpleTouchLogging":
-      disableSimpleTouchLogging(result: result)
-    case "setRingTouchMode":
-      let args = call.arguments as? [String: Any]
-      let appType = args?["appType"] as? Int ?? 0
-      let touchOn = args?["touchOn"] as? Bool ?? false
-      let strength = args?["strength"] as? Int ?? 1
-      setRingTouchMode(
-        appType: appType,
-        touchOn: touchOn,
-        strength: strength,
-        result: result
-      )
     case "getBatteryLevel":
       getBatteryLevel(result: result)
     case "syncTimeAndGetCoreFeatures":
@@ -545,6 +559,18 @@ final class IosBleBridge: NSObject {
       syncManualPressure(result: result)
     case "syncManualHeartRate":
       syncManualHeartRate(result: result)
+    case "executeManualMeasurement":
+      executeManualMeasurement(call: call, result: result)
+    case "isMeasurementBusy":
+      result(RingMeasurementSession.shared.isBusy)
+    case "resetMeasurementSession":
+      RingMeasurementSession.shared.abortManualAndReset()
+      result(true)
+    case "collectHealthIfIdle":
+      let force = (call.arguments as? [String: Any])?["force"] as? Bool ?? false
+      RingMeasurementSession.shared.collectHealthIfIdle(force: force) { ok in
+        result(ok)
+      }
     case "syncAutoBp":
       syncAutoBp(result: result)
     case "syncManualBp":
@@ -609,9 +635,8 @@ final class IosBleBridge: NSObject {
         result(false)
         return
       }
-      collectPendingSamples {
-        IosRingCollectionWatermark.markCollected()
-        result(true)
+      RingMeasurementSession.shared.collectHealthIfIdle(force: true) { ok in
+        result(ok)
       }
     default:
       result(FlutterMethodNotImplemented)
@@ -633,17 +658,17 @@ final class IosBleBridge: NSObject {
       return
     }
 
+    let runCollect: () -> Void = { [weak self] in
+      RingMeasurementSession.shared.collectHealthIfIdle(force: true) { ok in
+        self?.checkBatteryStatusIfConnected(force: true)
+        completion(ok)
+      }
+    }
+
     let reconnect: () -> Void = { [weak self] in
       guard let self = self else {
         completion(false)
         return
-      }
-      let runCollect = {
-        self.collectPendingSamples {
-          IosRingCollectionWatermark.markCollected()
-          self.checkBatteryStatusIfConnected(force: true)
-          completion(true)
-        }
       }
       if let peripheral = self.connected {
         QCSDKManager.shareInstance().add(peripheral) { _ in
@@ -711,6 +736,19 @@ final class IosBleBridge: NSObject {
   }
 
   private func collectPendingSamples(done: @escaping () -> Void) {
+    guard !backgroundCollectInFlight else {
+      done()
+      return
+    }
+    var finished = false
+    let finishOnce: () -> Void = { [weak self] in
+      guard !finished else { return }
+      finished = true
+      self?.backgroundCollectInFlight = false
+      done()
+    }
+    mainQueue.asyncAfter(deadline: .now() + 45, execute: finishOnce)
+    backgroundCollectInFlight = true
     let iso = ISO8601DateFormatter()
     iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     let isoFallback = ISO8601DateFormatter()
@@ -720,7 +758,9 @@ final class IosBleBridge: NSObject {
     var pending = 5
     let finish: () -> Void = {
       pending -= 1
-      if pending <= 0 { done() }
+      if pending <= 0 {
+        finishOnce()
+      }
     }
 
     QCSDKCmdCreator.readBatterySuccess({ [weak self] battery, charging in
@@ -1079,99 +1119,6 @@ final class IosBleBridge: NSObject {
     }, failed: {
       result(FlutterError(code: "BATTERY_FAIL", message: "readBattery failed", details: nil))
     })
-  }
-
-  private func enableSimpleTouchLogging(result: @escaping FlutterResult) {
-    touchCount = 0
-    touchLoggingActive = true
-
-    let manager = QCSDKManager.shareInstance()
-    _ = OdmBandNotifyCenter.registerNotify()
-
-    if touchObserver == nil {
-      touchObserver = NotificationCenter.default.addObserver(
-        forName: .OdmBandTakePicture,
-        object: nil,
-        queue: .main
-      ) { [weak self] _ in
-        self?.recordRingTouch()
-      }
-    }
-
-    manager.takePicture = { [weak self] in
-      self?.recordRingTouch()
-    }
-
-    // 참고 앱(picnique_ring)과 동일: type=3(赞念/묵주), strength=1
-    let touchType = QCTouchGestureControlType(rawValue: 3)
-      ?? QCTouchGestureControlType(rawValue: 0)!
-    QCSDKCmdCreator.setTouch(touchType, strength: 1, finshed: { error in
-      if let err = error {
-        result(FlutterError(code: "TOUCH_LOG_FAIL", message: err.localizedDescription, details: nil))
-      } else {
-        result(true)
-      }
-    })
-  }
-
-  private func disableSimpleTouchLogging(result: @escaping FlutterResult) {
-    touchLoggingActive = false
-    QCSDKManager.shareInstance().takePicture = { }
-
-    if let obs = touchObserver {
-      NotificationCenter.default.removeObserver(obs)
-      touchObserver = nil
-    }
-
-    let offType = QCTouchGestureControlType(rawValue: 0)
-      ?? QCTouchGestureControlType(rawValue: 0)!
-    QCSDKCmdCreator.setTouch(offType, strength: 1, finshed: { error in
-      if let err = error {
-        result(FlutterError(code: "TOUCH_LOG_FAIL", message: err.localizedDescription, details: nil))
-      } else {
-        result(true)
-      }
-    })
-  }
-
-  private func setRingTouchMode(
-    appType: Int,
-    touchOn: Bool,
-    strength: Int,
-    result: @escaping FlutterResult
-  ) {
-    let typeRaw = touchOn ? appType : 0
-    guard let touchType = QCTouchGestureControlType(rawValue: typeRaw) else {
-      result(FlutterError(
-        code: "TOUCH_MODE_FAIL",
-        message: "invalid appType \(appType)",
-        details: nil
-      ))
-      return
-    }
-
-    touchLoggingActive = appType == 3 && touchOn
-
-    QCSDKCmdCreator.setTouch(touchType, strength: strength, finshed: { error in
-      if let err = error {
-        result(FlutterError(
-          code: "TOUCH_MODE_FAIL",
-          message: err.localizedDescription,
-          details: nil
-        ))
-      } else {
-        result(true)
-      }
-    })
-  }
-
-  private func recordRingTouch() {
-    guard touchLoggingActive else { return }
-    touchCount += 1
-    emit([
-      "type": "ringTouch",
-      "count": touchCount,
-    ])
   }
 
   private func readHardwareRevision(result: @escaping FlutterResult) {
@@ -1735,76 +1682,800 @@ final class IosBleBridge: NSObject {
     fetchDay(at: 0)
   }
 
+  private func routeManualMeasurement(type: String, legacyResult: @escaping FlutterResult) {
+    RingMeasurementSession.shared.preemptForManualMeasurement { [weak self] in
+      guard let self = self else { return }
+      switch type {
+      case "bloodOxygen":
+        self.syncManualBloodOxygen(result: legacyResult)
+      case "heartRate":
+        self.syncManualHeartRate(result: legacyResult)
+      case "stress":
+        self.syncManualPressure(result: legacyResult)
+      default:
+        self.invokeFlutterResult(
+          legacyResult,
+          FlutterError(code: "MEASURE_INVALID_TYPE", message: "unknown type \(type)", details: nil)
+        )
+      }
+    }
+  }
+
+  // MARK: - Manual measure helpers
+
+  private func clearManualMeasuringHooks(_ manager: QCSDKManager) {
+    manager.boMeasuring = { _ in }
+    manager.hrMeasuring = { _ in }
+    manager.realTimeHeartRate = { _ in }
+    manager.measuringFail = { }
+  }
+
+  private func retrySetSchedualBOOff(attempt: Int = 0, completion: @escaping (Bool) -> Void) {
+    QCSDKCmdCreator.setSchedualBOInfoOn(false, success: { _ in
+      completion(true)
+    }, fail: {
+      if attempt < 2 {
+        self.mainQueue.asyncAfter(deadline: .now() + 0.5) {
+          self.retrySetSchedualBOOff(attempt: attempt + 1, completion: completion)
+        }
+      } else {
+        completion(false)
+      }
+    })
+  }
+
+  private func retrySetSchedualBOOn(attempt: Int = 0) {
+    QCSDKCmdCreator.setSchedualBOInfoOn(true, success: { _ in
+      print("[SPO2_MANUAL] scheduled SpO2 restored")
+    }, fail: {
+      if attempt < 2 {
+        self.mainQueue.asyncAfter(deadline: .now() + 0.5) {
+          self.retrySetSchedualBOOn(attempt: attempt + 1)
+        }
+      } else {
+        print("[SPO2_MANUAL] scheduled SpO2 restore failed")
+      }
+    })
+  }
+
+  private func retrySetSchedualHrOff(
+    interval: Int,
+    attempt: Int = 0,
+    completion: @escaping (Bool) -> Void
+  ) {
+    QCSDKCmdCreator.setSchedualHeartRateStatus(false, timeInterval: interval, success: {
+      completion(true)
+    }, fail: {
+      if attempt < 2 {
+        self.mainQueue.asyncAfter(deadline: .now() + 0.5) {
+          self.retrySetSchedualHrOff(interval: interval, attempt: attempt + 1, completion: completion)
+        }
+      } else {
+        completion(false)
+      }
+    })
+  }
+
+  private func retrySetSchedualHrOn(interval: Int, attempt: Int = 0) {
+    QCSDKCmdCreator.setSchedualHeartRateStatus(true, timeInterval: interval, success: {
+      print("[HR_MANUAL] scheduled HR restored (interval=\(interval))")
+    }, fail: {
+      if attempt < 2 {
+        self.mainQueue.asyncAfter(deadline: .now() + 0.5) {
+          self.retrySetSchedualHrOn(interval: interval, attempt: attempt + 1)
+        }
+      } else {
+        print("[HR_MANUAL] scheduled HR restore failed")
+      }
+    })
+  }
+
+  private func retrySetSchedualStressOff(attempt: Int = 0, completion: @escaping (Bool) -> Void) {
+    QCSDKCmdCreator.setSchedualStressStatus(false) { error in
+      if error == nil {
+        completion(true)
+      } else if attempt < 2 {
+        self.mainQueue.asyncAfter(deadline: .now() + 0.5) {
+          self.retrySetSchedualStressOff(attempt: attempt + 1, completion: completion)
+        }
+      } else {
+        completion(false)
+      }
+    }
+  }
+
+  private func retrySetSchedualHrOn(
+    interval: Int,
+    attempt: Int = 0,
+    completion: @escaping (Bool) -> Void
+  ) {
+    QCSDKCmdCreator.setSchedualHeartRateStatus(true, timeInterval: interval, success: {
+      completion(true)
+    }, fail: {
+      if attempt < 2 {
+        self.mainQueue.asyncAfter(deadline: .now() + 0.5) {
+          self.retrySetSchedualHrOn(interval: interval, attempt: attempt + 1, completion: completion)
+        }
+      } else {
+        completion(false)
+      }
+    })
+  }
+
+  /// 수동 SpO₂ — `startToMeasuring(.bloodOxygen)` 단일 경로. 스케줄 복구는 Flutter `enableRingAutoMonitoring` 에 맡긴다.
   private func syncManualBloodOxygen(result: @escaping FlutterResult) {
+    let manager = QCSDKManager.shareInstance()
+    clearManualMeasuringHooks(manager)
+
+    let begin: () -> Void = {
+      self.mainQueue.asyncAfter(deadline: .now() + 0.4) {
+        self.beginManualBloodOxygenMeasuring(result: result)
+      }
+    }
+
+    QCSDKCmdCreator.getSchedualBOInfoSuccess({ enabled in
+      guard enabled else {
+        print("[SPO2_MANUAL] scheduled SpO2 already off")
+        begin()
+        return
+      }
+      self.retrySetSchedualBOOff { paused in
+        print("[SPO2_MANUAL] scheduled SpO2 pause \(paused ? "ok" : "failed")")
+        begin()
+      }
+    }, fail: {
+      print("[SPO2_MANUAL] getSchedualBOInfo failed — measure anyway")
+      begin()
+    })
+  }
+
+  private func beginManualBloodOxygenMeasuring(result: @escaping FlutterResult) {
     let manager = QCSDKManager.shareInstance()
     var replied = false
     var latestValue = 0
+    var spo2Observer: NSObjectProtocol?
+    var finishObserver: NSObjectProtocol?
+    var timeout: DispatchWorkItem?
 
-    func extractSpO2(_ value: Any?) -> Int {
-      if let n = value as? NSNumber { return n.intValue }
-      if let i = value as? Int { return i }
-      if let d = value as? Double { return Int(d.rounded()) }
-      if let f = value as? Float { return Int(f.rounded()) }
-      if let dict = value as? [AnyHashable: Any] {
-        for key in ["spo2", "so2", "soa2", "value", "bloodOxygen"] {
-          if let n = dict[key] as? NSNumber { return n.intValue }
-          if let i = dict[key] as? Int { return i }
+    func extractSpO2Value(_ raw: Any?) -> Int {
+      if let n = raw as? NSNumber { return n.intValue }
+      if let i = raw as? Int { return i }
+      if let f = raw as? Float { return Int(f.rounded()) }
+      if let d = raw as? Double { return Int(d.rounded()) }
+      if let model = raw as? QCBloodOxygenModel {
+        return Int(model.soa2.rounded())
+      }
+      return 0
+    }
+
+    func extractSpO2FromNotification(_ note: Notification) -> Int {
+      let direct = extractSpO2Value(note.object)
+      if direct > 0 { return direct }
+      guard let info = note.userInfo else { return 0 }
+      for key in ["spo2", "so2", "soa2", "value", "bloodOxygen"] {
+        if let n = info[key] as? NSNumber { return n.intValue }
+        if let i = info[key] as? Int { return i }
+      }
+      return 0
+    }
+
+    func cleanup() {
+      timeout?.cancel()
+      if let obs = spo2Observer {
+        NotificationCenter.default.removeObserver(obs)
+        spo2Observer = nil
+      }
+      if let obs = finishObserver {
+        NotificationCenter.default.removeObserver(obs)
+        finishObserver = nil
+      }
+      manager.boMeasuring = { _ in }
+      manager.measuringFail = { }
+    }
+
+    func finish(_ value: Any?) {
+      guard !replied else { return }
+      replied = true
+      cleanup()
+      self.invokeFlutterResult(result, value)
+    }
+    func finishOk(_ value: Int) {
+      guard value > 0, value <= 100 else { return }
+      print("[SPO2_MANUAL] result=\(value)")
+      finish(["spo2": value, "value": value])
+    }
+
+    func finishErr(_ code: String, _ message: String) {
+      print("[SPO2_MANUAL] error \(code): \(message)")
+      finish(FlutterError(code: code, message: message, details: nil))
+    }
+
+    timeout = DispatchWorkItem {
+      if latestValue > 0 {
+        finishOk(latestValue)
+      } else {
+        finishErr("SPO2_MANUAL_TIMEOUT", "manual SpO2 timeout")
+      }
+    }
+    mainQueue.asyncAfter(deadline: .now() + .seconds(45), execute: timeout!)
+
+    _ = OdmBandNotifyCenter.registerNotify()
+    spo2Observer = NotificationCenter.default.addObserver(
+      forName: Notification.Name(OdmBandRealTimeSO2),
+      object: nil,
+      queue: .main
+    ) { note in
+      let v = extractSpO2FromNotification(note)
+      if v > 0 && v <= 100 {
+        latestValue = v
+        finishOk(v)
+      }
+    }
+    finishObserver = NotificationCenter.default.addObserver(
+      forName: Notification.Name(OdmBandRealTimeBloodOxygenFinish),
+      object: nil,
+      queue: .main
+    ) { note in
+      let v = extractSpO2FromNotification(note)
+      if v > 0 && v <= 100 {
+        latestValue = v
+        finishOk(v)
+        return
+      }
+      if latestValue > 0 {
+        finishOk(latestValue)
+      }
+    }
+
+    manager.boMeasuring = { so2 in
+      let v = Int(so2.rounded())
+      guard v > 0 && v <= 100 else { return }
+      print("[SPO2_MANUAL] boMeasuring=\(v)")
+      latestValue = v
+      self.mainQueue.async { finishOk(v) }
+    }
+    manager.measuringFail = {
+      self.mainQueue.async {
+        guard !replied else { return }
+        if latestValue > 0 {
+          finishOk(latestValue)
+          return
+        }
+        finishErr("SPO2_MANUAL_FAIL", "manual SpO2 failed")
+      }
+    }
+
+    manager.startToMeasuring(
+      withOperateType: .bloodOxygen,
+      timeout: 45,
+      measuringHandle: { measuringResult in
+        let v = extractSpO2Value(measuringResult)
+        guard v > 0 && v <= 100 else { return }
+        print("[SPO2_MANUAL] measuringHandle=\(v)")
+        latestValue = v
+        self.mainQueue.async { finishOk(v) }
+      },
+      completedHandle: { isSuccess, finalResult, error in
+        self.mainQueue.async {
+          guard !replied else { return }
+          let v = extractSpO2Value(finalResult)
+          if v > 0 && v <= 100 {
+            print("[SPO2_MANUAL] completedHandle=\(v) success=\(isSuccess)")
+            finishOk(v)
+            return
+          }
+          if latestValue > 0 {
+            finishOk(latestValue)
+            return
+          }
+          if let err = error as NSError? {
+            print("[SPO2_MANUAL] completed error \(err.code) \(err.localizedDescription)")
+            if err.code == -3 {
+              finishErr("SPO2_MANUAL_WEAR", err.localizedDescription)
+            }
+          }
+        }
+      }
+    )
+  }
+
+  /// 수동 심박 — SpO₂ 와 동일하게 `startToMeasuring(.heartRate)` 단일 경로.
+  private func syncManualHeartRate(result: @escaping FlutterResult) {
+    let manager = QCSDKManager.shareInstance()
+    clearManualMeasuringHooks(manager)
+
+    var savedHrInterval = IosRingMeasurementPolicy.ringAutoHeartIntervalMinutes
+
+    let begin: () -> Void = {
+      self.mainQueue.asyncAfter(deadline: .now() + 0.4) {
+        self.beginManualHeartRateMeasuring(result: result)
+      }
+    }
+
+    QCSDKCmdCreator.getSchedualHeartRateStatusAndInterval(success: { enabled, interval in
+      if interval > 0 {
+        savedHrInterval = interval
+      }
+      guard enabled else {
+        print("[HR_MANUAL] scheduled HR already off")
+        begin()
+        return
+      }
+      self.retrySetSchedualHrOff(interval: savedHrInterval) { paused in
+        print("[HR_MANUAL] scheduled HR pause \(paused ? "ok" : "failed")")
+        begin()
+      }
+    }, fail: {
+      print("[HR_MANUAL] getSchedualHeartRate failed — measure anyway")
+      begin()
+    })
+  }
+
+  private func beginManualHeartRateMeasuring(result: @escaping FlutterResult) {
+    let manager = QCSDKManager.shareInstance()
+    var replied = false
+    var latestValue = 0
+    var hrObserver: NSObjectProtocol?
+    var finishObserver: NSObjectProtocol?
+    var timeout: DispatchWorkItem?
+
+    func extractHrValue(_ raw: Any?) -> Int {
+      if let n = raw as? NSNumber { return n.intValue }
+      if let i = raw as? Int { return i }
+      if let model = raw as? QCHeartRateModel {
+        return Int(model.heartrate)
+      }
+      return 0
+    }
+
+    func extractHrFromNotification(_ note: Notification) -> Int {
+      let direct = extractHrValue(note.object)
+      if direct > 0 { return direct }
+      guard let info = note.userInfo else { return 0 }
+      for key in ["hr", "heartRate", "value"] {
+        if let n = info[key] as? NSNumber { return n.intValue }
+        if let i = info[key] as? Int { return i }
+      }
+      return 0
+    }
+
+    func cleanup() {
+      timeout?.cancel()
+      if let obs = hrObserver {
+        NotificationCenter.default.removeObserver(obs)
+        hrObserver = nil
+      }
+      if let obs = finishObserver {
+        NotificationCenter.default.removeObserver(obs)
+        finishObserver = nil
+      }
+      manager.hrMeasuring = { _ in }
+      manager.realTimeHeartRate = { _ in }
+      manager.measuringFail = { }
+    }
+
+    func finish(_ value: Any?) {
+      guard !replied else { return }
+      replied = true
+      cleanup()
+      self.invokeFlutterResult(result, value)
+    }
+
+    func finishOk(_ value: Int) {
+      guard value > 0 else { return }
+      print("[HR_MANUAL] result=\(value)")
+      finish(["hr": value, "value": value])
+    }
+
+    func finishErr(_ code: String, _ message: String) {
+      print("[HR_MANUAL] error \(code): \(message)")
+      finish(FlutterError(code: code, message: message, details: nil))
+    }
+
+    timeout = DispatchWorkItem {
+      if latestValue > 0 {
+        finishOk(latestValue)
+      } else {
+        finishErr("HR_MANUAL_TIMEOUT", "manual HR timeout")
+      }
+    }
+    mainQueue.asyncAfter(deadline: .now() + .seconds(45), execute: timeout!)
+
+    _ = OdmBandNotifyCenter.registerNotify()
+    hrObserver = NotificationCenter.default.addObserver(
+      forName: Notification.Name(OdmBandRealTimeHeartRate),
+      object: nil,
+      queue: .main
+    ) { note in
+      let v = extractHrFromNotification(note)
+      if v > 0 {
+        latestValue = v
+        finishOk(v)
+      }
+    }
+    finishObserver = NotificationCenter.default.addObserver(
+      forName: Notification.Name(OdmBandRealTimeHeartRateFinish),
+      object: nil,
+      queue: .main
+    ) { note in
+      let v = extractHrFromNotification(note)
+      if v > 0 {
+        latestValue = v
+        finishOk(v)
+        return
+      }
+      if latestValue > 0 {
+        finishOk(latestValue)
+      }
+    }
+
+    manager.hrMeasuring = { hr in
+      let v = Int(hr)
+      guard v > 0 else { return }
+      print("[HR_MANUAL] hrMeasuring=\(v)")
+      latestValue = v
+      self.mainQueue.async { finishOk(v) }
+    }
+    manager.realTimeHeartRate = { hr in
+      let v = Int(hr)
+      guard v > 0 else { return }
+      print("[HR_MANUAL] realTimeHeartRate=\(v)")
+      latestValue = v
+      self.mainQueue.async { finishOk(v) }
+    }
+    manager.measuringFail = {
+      self.mainQueue.async {
+        guard !replied else { return }
+        if latestValue > 0 {
+          finishOk(latestValue)
+          return
+        }
+        finishErr("HR_MANUAL_FAIL", "manual HR failed")
+      }
+    }
+
+    manager.startToMeasuring(
+      withOperateType: .heartRate,
+      timeout: 45,
+      measuringHandle: { measuringResult in
+        let v = extractHrValue(measuringResult)
+        guard v > 0 else { return }
+        print("[HR_MANUAL] measuringHandle=\(v)")
+        latestValue = v
+        self.mainQueue.async { finishOk(v) }
+      },
+      completedHandle: { isSuccess, finalResult, error in
+        self.mainQueue.async {
+          guard !replied else { return }
+          let v = extractHrValue(finalResult)
+          if v > 0 {
+            print("[HR_MANUAL] completedHandle=\(v) success=\(isSuccess)")
+            finishOk(v)
+            return
+          }
+          if latestValue > 0 {
+            finishOk(latestValue)
+            return
+          }
+          if let err = error as NSError? {
+            print("[HR_MANUAL] completed error \(err.code) \(err.localizedDescription)")
+            if err.code == -3 {
+              finishErr("HR_MANUAL_WEAR", err.localizedDescription)
+            }
+          }
+        }
+      }
+    )
+  }
+
+  private func readLatestScheduledStressScore(completion: @escaping (Int) -> Void) {
+    QCSDKCmdCreator.getSchedualStressData(withDates: [0]) { data, error in
+      self.mainQueue.async {
+        if let err = error {
+          print("[STRESS_MANUAL] getSchedualStressData: \(err.localizedDescription)")
+          completion(0)
+          return
+        }
+        guard let list = data as? [QCStressModel],
+              let model = list.first,
+              let latest = model.stresses.reversed().first(where: { $0.intValue > 0 })?.intValue,
+              latest > 0 else {
+          completion(0)
+          return
+        }
+        completion(latest)
+      }
+    }
+  }
+
+  private func retrySetSchedualHrvOff(attempt: Int = 0, completion: @escaping (Bool) -> Void) {
+    QCSDKCmdCreator.setSchedualHRVStatus(false) { error in
+      if error == nil {
+        completion(true)
+      } else if attempt < 2 {
+        self.mainQueue.asyncAfter(deadline: .now() + 0.5) {
+          self.retrySetSchedualHrvOff(attempt: attempt + 1, completion: completion)
+        }
+      } else {
+        completion(false)
+      }
+    }
+  }
+
+  /// HR/SpO₂ 수동 직전과 같이 — 자동 스트레스·HRV 스케줄이 켜져 있으면 잠시 끈다.
+  private func pauseStressPipelineForManual(completion: @escaping () -> Void) {
+    let group = DispatchGroup()
+
+    group.enter()
+    QCSDKCmdCreator.getSchedualStressStatus(finshed: { enabled, _ in
+      guard enabled else {
+        print("[STRESS_MANUAL] scheduled stress already off")
+        group.leave()
+        return
+      }
+      self.retrySetSchedualStressOff { paused in
+        print("[STRESS_MANUAL] scheduled stress pause \(paused ? "ok" : "failed")")
+        group.leave()
+      }
+    })
+
+    group.enter()
+    QCSDKCmdCreator.getSchedualHRV(finshed: { enabled, _ in
+      guard enabled else {
+        print("[STRESS_MANUAL] scheduled HRV already off")
+        group.leave()
+        return
+      }
+      self.retrySetSchedualHrvOff { paused in
+        print("[STRESS_MANUAL] scheduled HRV pause \(paused ? "ok" : "failed")")
+        group.leave()
+      }
+    })
+
+    group.notify(queue: mainQueue, execute: completion)
+  }
+
+  /// 직전 심박/SpO₂ 등 in-flight 측정 종료 — `-2`(EndOneKeyMeasuringError) 방지.
+  private func stopInFlightMeasures(completion: @escaping () -> Void) {
+    let manager = QCSDKManager.shareInstance()
+    clearManualMeasuringHooks(manager)
+    let types: [QCMeasuringType] = [.stress, .heartRate, .bloodOxygen, .HRV, .oneKeyMeasure]
+    let group = DispatchGroup()
+    for type in types {
+      group.enter()
+      var left = false
+      manager.stopToMeasuring(withOperateType: type) { _, _ in
+        if !left {
+          left = true
+          group.leave()
+        }
+      }
+      mainQueue.asyncAfter(deadline: .now() + 1.2) {
+        if !left {
+          left = true
+          group.leave()
+        }
+      }
+    }
+    group.notify(queue: mainQueue, execute: completion)
+  }
+
+  /// 수동 스트레스 — 심박/SpO₂ 와 동일: 스케줄 pause → in-flight stop → `startToMeasuring(.stress)`.
+  private func syncManualPressure(result: @escaping FlutterResult) {
+    pauseStressPipelineForManual {
+      self.stopInFlightMeasures {
+        self.mainQueue.asyncAfter(deadline: .now() + 0.8) {
+          self.beginManualStressMeasuring(result: result)
+        }
+      }
+    }
+  }
+
+  private func beginManualStressMeasuring(result: @escaping FlutterResult) {
+    let manager = QCSDKManager.shareInstance()
+    var replied = false
+    var latestStress = 0
+    var stressObserver: NSObjectProtocol?
+    var hrvObserver: NSObjectProtocol?
+    var timeout: DispatchWorkItem?
+
+    func scoreInRange(_ v: Int) -> Int {
+      (v > 0 && v <= 100) ? v : 0
+    }
+
+    func intField(_ dict: [AnyHashable: Any], _ key: String) -> Int {
+      if let n = dict[key] as? NSNumber { return n.intValue }
+      if let i = dict[key] as? Int { return i }
+      return 0
+    }
+
+    // QC iOS 스트레스 결과는 `{ sbp: 38, dbp: 0 }` 형태로 오기도 한다.
+    func extractStressScore(_ raw: Any?) -> Int {
+      if let n = raw as? NSNumber {
+        return scoreInRange(n.intValue)
+      }
+      if let i = raw as? Int {
+        return scoreInRange(i)
+      }
+      if let dict = raw as? [AnyHashable: Any] {
+        for key in ["pressure", "value", "stress"] {
+          let v = scoreInRange(intField(dict, key))
+          if v > 0 { return v }
+        }
+        let sbp = intField(dict, "sbp")
+        let dbp = intField(dict, "dbp")
+        if dbp <= 0 {
+          let stress = scoreInRange(sbp)
+          if stress > 0 { return stress }
         }
       }
       return 0
     }
 
-    func finishOk(_ value: Int) {
+    func extractFromNotification(_ note: Notification) -> Int {
+      let direct = extractStressScore(note.object)
+      if direct > 0 { return direct }
+      guard let info = note.userInfo else { return 0 }
+      let fromInfo = extractStressScore(info as [AnyHashable: Any])
+      if fromInfo > 0 { return fromInfo }
+      for key in ["value", "stress", "pressure", "sbp"] {
+        let v = extractStressScore(info[key])
+        if v > 0 { return v }
+      }
+      for val in info.values {
+        let v = extractStressScore(val)
+        if v > 0 { return v }
+      }
+      return 0
+    }
+
+    func cleanup() {
+      timeout?.cancel()
+      if let obs = stressObserver {
+        NotificationCenter.default.removeObserver(obs)
+        stressObserver = nil
+      }
+      if let obs = hrvObserver {
+        NotificationCenter.default.removeObserver(obs)
+        hrvObserver = nil
+      }
+      manager.measuringFail = { }
+    }
+
+    func finish(_ value: Any?) {
       guard !replied else { return }
       replied = true
-      result([
-        "spo2": value,
-        "value": value
-      ])
+      cleanup()
+      manager.stopToMeasuring(withOperateType: .stress) { _, _ in }
+      self.invokeFlutterResult(result, value)
+    }
+
+    func finishOk(_ value: Int) {
+      guard value > 0 else { return }
+      print("[STRESS_MANUAL] result=\(value)")
+      finish(["pressure": value, "value": value])
     }
 
     func finishErr(_ code: String, _ message: String) {
-      guard !replied else { return }
-      replied = true
-      result(FlutterError(code: code, message: message, details: nil))
+      print("[STRESS_MANUAL] error \(code): \(message)")
+      finish(FlutterError(code: code, message: message, details: nil))
     }
 
-    // boMeasuring 1회 콜백은 이전 캐시값을 즉시 반환할 수 있음 → 완료 핸들러 API 사용
-    manager.startToMeasuring(
-      withOperateType: .bloodOxygen,
-      timeout: 45,
-      measuringHandle: { measuringResult in
-        let v = extractSpO2(measuringResult)
-        if v > 0 && v <= 100 { latestValue = v }
-      },
-      completedHandle: { isSuccess, finalResult, error in
-        let finalValue = extractSpO2(finalResult)
-        if finalValue > 0 && finalValue <= 100 {
-          finishOk(finalValue)
-          return
-        }
-        if latestValue > 0 {
-          finishOk(latestValue)
-          return
-        }
-        if let err = error {
-          finishErr("SPO2_MANUAL_FAIL", err.localizedDescription)
-          return
-        }
-        if !isSuccess {
-          finishErr("SPO2_MANUAL_FAIL", "SpO2 measurement failed")
-          return
-        }
-        finishErr("SPO2_MANUAL_EMPTY", "no SpO2 data")
+    timeout = DispatchWorkItem {
+      if latestStress > 0 {
+        finishOk(latestStress)
+      } else {
+        finishErr("PRESSURE_MANUAL_TIMEOUT", "manual stress timeout")
       }
-    )
+    }
+    mainQueue.asyncAfter(deadline: .now() + .seconds(90), execute: timeout!)
+
+    _ = OdmBandNotifyCenter.registerNotify()
+    stressObserver = NotificationCenter.default.addObserver(
+      forName: Notification.Name(OdmBandRealTimeStress),
+      object: nil,
+      queue: .main
+    ) { note in
+      let v = extractFromNotification(note)
+      if v > 0 {
+        print("[STRESS_MANUAL] stress notification=\(v)")
+        latestStress = v
+        finishOk(v)
+      }
+    }
+    hrvObserver = NotificationCenter.default.addObserver(
+      forName: Notification.Name(OdmBandRealTimeHRV),
+      object: nil,
+      queue: .main
+    ) { note in
+      let v = extractFromNotification(note)
+      if v > 0 {
+        print("[STRESS_MANUAL] stress via hrv notification=\(v)")
+        latestStress = v
+        finishOk(v)
+      }
+    }
+
+    manager.measuringFail = {
+      self.mainQueue.async {
+        guard !replied else { return }
+        if latestStress > 0 {
+          finishOk(latestStress)
+          return
+        }
+        finishErr("PRESSURE_MANUAL_FAIL", "manual stress failed")
+      }
+    }
+
+    var startAttempts = 0
+
+    func startStressMeasure() {
+      startAttempts += 1
+      print("[STRESS_MANUAL] startToMeasuring stress (attempt \(startAttempts))")
+      manager.startToMeasuring(
+        withOperateType: .stress,
+        timeout: 60,
+        measuringHandle: { measuringResult in
+          let v = extractStressScore(measuringResult)
+          guard v > 0 else { return }
+          print("[STRESS_MANUAL] stress measuringHandle=\(v)")
+          latestStress = v
+          self.mainQueue.async { finishOk(v) }
+        },
+        completedHandle: { isSuccess, finalResult, error in
+          self.mainQueue.async {
+            guard !replied else { return }
+            let v = extractStressScore(finalResult)
+            if v > 0 {
+              print("[STRESS_MANUAL] stress completedHandle=\(v) success=\(isSuccess)")
+              finishOk(v)
+              return
+            }
+            if latestStress > 0 {
+              finishOk(latestStress)
+              return
+            }
+            if let err = error as NSError? {
+              print("[STRESS_MANUAL] stress completed error \(err.code) \(err.localizedDescription)")
+              if err.code == -3 {
+                finishErr("PRESSURE_MANUAL_WEAR", err.localizedDescription)
+                return
+              }
+              if err.code == -1, startAttempts < 2 {
+                print("[STRESS_MANUAL] start fail -1 — retry after 1.5s")
+                self.mainQueue.asyncAfter(deadline: .now() + 1.5) {
+                  startStressMeasure()
+                }
+                return
+              }
+              if err.code == -1 {
+                finishErr("PRESSURE_MANUAL_FAIL", "stress measure start failed")
+                return
+              }
+              if err.code == -2 {
+                print("[STRESS_MANUAL] end cmd -2 — keep waiting for stress value")
+                return
+              }
+            }
+            print("[STRESS_MANUAL] stress completed success=\(isSuccess) raw=\(String(describing: finalResult))")
+          }
+        }
+      )
+    }
+
+    startStressMeasure()
+  }
+
+  private func executeManualMeasurement(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    let type = (call.arguments as? [String: Any])?["type"] as? String ?? ""
+    routeManualMeasurement(type: type, legacyResult: result)
   }
 
   private func syncPressure(offset: Int, result: @escaping FlutterResult) {
     let clamped = max(0, min(offset, 6))
     QCSDKCmdCreator.getSchedualStressData(withDates: [NSNumber(value: clamped)]) { data, error in
-      if let err = error {
-        result(FlutterError(code: "PRESSURE_FAIL", message: err.localizedDescription, details: nil))
+      if error != nil {
+        result(nil)
         return
       }
       guard let list = data as? [QCStressModel], let model = list.first else {
@@ -1830,112 +2501,6 @@ final class IosBleBridge: NSObject {
         "today": today,
       ])
     }
-  }
-
-  private func syncManualPressure(result: @escaping FlutterResult) {
-    let manager = QCSDKManager.shareInstance()
-    var replied = false
-    var latestValue = 0
-
-    func extractStress(_ value: Any?) -> Int {
-      if let n = value as? NSNumber { return n.intValue }
-      if let i = value as? Int { return i }
-      if let dict = value as? [AnyHashable: Any] {
-        for key in ["pressure", "value", "stress"] {
-          if let n = dict[key] as? NSNumber { return n.intValue }
-          if let i = dict[key] as? Int { return i }
-        }
-      }
-      return 0
-    }
-
-    func finishOk(_ value: Int) {
-      guard !replied else { return }
-      replied = true
-      timeoutWork?.cancel()
-      result(["pressure": value, "value": value])
-    }
-
-    func finishErr(_ code: String, _ message: String) {
-      guard !replied else { return }
-      replied = true
-      timeoutWork?.cancel()
-      result(FlutterError(code: code, message: message, details: nil))
-    }
-
-    var timeoutWork: DispatchWorkItem?
-    let work = DispatchWorkItem {
-      if latestValue > 0 {
-        finishOk(latestValue)
-      } else {
-        finishErr("PRESSURE_MANUAL_TIMEOUT", "manual stress timeout")
-      }
-    }
-    timeoutWork = work
-    mainQueue.asyncAfter(deadline: .now() + 45, execute: work)
-
-    // Android manualModePressure와 동일: 링에서 실시간 스트레스 측정
-    manager.startToMeasuring(
-      withOperateType: .stress,
-      timeout: 45,
-      measuringHandle: { measuringResult in
-        let v = extractStress(measuringResult)
-        if v > 0 { latestValue = v }
-      },
-      completedHandle: { isSuccess, finalResult, error in
-        let finalValue = extractStress(finalResult)
-        if finalValue > 0 {
-          finishOk(finalValue)
-          return
-        }
-        if latestValue > 0 {
-          finishOk(latestValue)
-          return
-        }
-        if let err = error {
-          finishErr("PRESSURE_MANUAL_FAIL", err.localizedDescription)
-          return
-        }
-        if !isSuccess {
-          finishErr("PRESSURE_MANUAL_FAIL", "stress measurement failed")
-          return
-        }
-        finishErr("PRESSURE_MANUAL_EMPTY", "no stress data")
-      }
-    )
-  }
-
-  private func syncManualHeartRate(result: @escaping FlutterResult) {
-    let manager = QCSDKManager.shareInstance()
-    let timeout = DispatchWorkItem {
-      manager.hrMeasuring = { _ in }
-      manager.measuringFail = { }
-      result(FlutterError(code: "HR_MANUAL_TIMEOUT", message: "manual HR timeout", details: nil))
-    }
-    mainQueue.asyncAfter(deadline: .now() + .seconds(45), execute: timeout)
-
-    manager.hrMeasuring = { hr in
-      timeout.cancel()
-      manager.hrMeasuring = { _ in }
-      manager.measuringFail = { }
-      result([
-        "hr": Int(hr),
-        "value": Int(hr)
-      ])
-    }
-    manager.measuringFail = {
-      timeout.cancel()
-      manager.hrMeasuring = { _ in }
-      manager.measuringFail = { }
-      result(FlutterError(code: "HR_MANUAL_FAIL", message: "manual HR failed", details: nil))
-    }
-
-    QCSDKCmdCreator.startHeartRateMeasuring(success: nil, fail: {
-      timeout.cancel()
-      manager.hrMeasuring = { _ in }
-      manager.measuringFail = { }
-      result(FlutterError(code: "HR_MANUAL_FAIL", message: "start HR measuring failed", details: nil))
-    })
   }
 
   private func syncAutoBp(result: @escaping FlutterResult) {
@@ -2194,6 +2759,7 @@ extension IosBleBridge: CBCentralManagerDelegate {
     connectTimeoutWork = nil
     pendingFreshReconnectPeripheral = nil
     keepaliveConnectInFlight = false
+    RingMeasurementSession.shared.resetToIdle()
     if let peripheral = connected {
       emit([
         "type": "connected",
@@ -2234,6 +2800,7 @@ extension IosBleBridge: CBCentralManagerDelegate {
     }
 
     connected = nil
+    RingMeasurementSession.shared.resetToIdle()
 
     if let pending = pendingDisconnect {
       pending(true)
@@ -2252,4 +2819,18 @@ extension IosBleBridge: CBCentralManagerDelegate {
 // MARK: - CBPeripheralDelegate
 extension IosBleBridge: CBPeripheralDelegate {
   // 현재는 별도 서비스 탐색 없이 QCSDKManager가 처리
+}
+
+extension IosBleBridge: RingMeasurementSessionDelegate {
+  func measurementSessionPerformCollect(completion: @escaping () -> Void) {
+    collectPendingSamples(done: completion)
+  }
+
+  func measurementSessionIsConnected() -> Bool {
+    connected?.state == .connected
+  }
+
+  func measurementSessionNotifyHealthDataReady() {
+    emitHealthDataReady()
+  }
 }

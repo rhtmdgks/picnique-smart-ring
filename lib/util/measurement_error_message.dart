@@ -18,6 +18,21 @@ String measurementErrorMessage(
     return spo2MeasurementErrorMessage(error);
   }
 
+  if (dataType == DataType.Stress || code.startsWith('PRESSURE_')) {
+    return _stressMeasurementErrorMessage(code);
+  }
+
+  if (code.contains('SESSION_BUSY') || code.contains('MANUAL_BUSY')) {
+    return '반지가 다른 측정·데이터 수집 중이에요.\n'
+        '잠시 후 다시 측정해 주세요.';
+  }
+
+  if (code.contains('MEASURE_CHANNEL_TIMEOUT') ||
+      code.contains('MEASURE_SESSION_TIMEOUT')) {
+    return '측정 응답이 지연됐어요.\n'
+        '잠시 후 다시 측정해 주세요.';
+  }
+
   if (code.contains('MANUAL_TIMEOUT')) {
     return '측정 시간이 초과됐어요.\n'
         '손가락을 움직이지 않은 상태로 다시 측정해 주세요.';
@@ -43,6 +58,31 @@ String measurementErrorMessage(
   }
 
   return '측정 중 문제가 발생했어요.\n'
+      '잠시 후 다시 시도해 주세요.';
+}
+
+String _stressMeasurementErrorMessage(String code) {
+  if (code.contains('SESSION_BUSY') || code.contains('MANUAL_BUSY')) {
+    return '반지가 다른 측정·데이터 수집 중이에요.\n'
+        '잠시 후 다시 측정해 주세요.';
+  }
+  if (code.contains('MANUAL_EMPTY')) {
+    return '스트레스 측정값을 받지 못했어요.\n'
+        '반지를 꽉 끼운 상태로 30~60초 기다린 뒤 다시 측정해 주세요.';
+  }
+  if (code.contains('MANUAL_TIMEOUT')) {
+    return '스트레스 측정 시간이 초과됐어요.\n'
+        '반지를 꽉 끼운 상태로 잠시 후 다시 시도해 주세요.';
+  }
+  if (code.contains('NOT_CONNECTED')) {
+    return '스마트링이 연결되어 있지 않아요.\n'
+        '설정에서 반지 연결을 확인해 주세요.';
+  }
+  if (code.contains('MANUAL_WEAR')) {
+    return '반지가 손가락에 제대로 닿지 않은 것 같아요.\n'
+        '반지를 꽉 끼운 뒤 스트레스 측정을 다시 해 주세요.';
+  }
+  return '스트레스 측정을 완료하지 못했어요.\n'
       '잠시 후 다시 시도해 주세요.';
 }
 

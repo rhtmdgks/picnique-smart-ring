@@ -6,7 +6,6 @@ import 'package:picnique_rosary_healthcare_smartring/core/constants/colors.dart'
 import 'package:picnique_rosary_healthcare_smartring/core/constants/fonts.dart';
 import 'package:picnique_rosary_healthcare_smartring/screens/layouts/background_layout.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_connection_coordinator.dart';
-import 'package:picnique_rosary_healthcare_smartring/services/ring_connection_service.dart';
 import 'package:picnique_rosary_healthcare_smartring/util/TouchCounter.dart';
 import 'package:picnique_rosary_healthcare_smartring/db/app_db.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/db/db_manager.dart';
@@ -27,7 +26,6 @@ class _CatholicRosaryScreenState extends State<CatholicRosaryScreen>
   late int _specialDotIndex;
   int _completedAnimations = 0;
   bool _isRecording = false;
-  int count = 0;
   RingTouchController touchCounter = RingTouchController();
   late final VoidCallback _onCounterUpdated;
   DateTime? _sessionStart;
@@ -187,36 +185,9 @@ class _CatholicRosaryScreenState extends State<CatholicRosaryScreen>
       return;
     }
 
-    try {
-      await RingConnectionService.syncTimeAfterConnect();
-    } catch (e) {
-      debugPrint('[ROSARY] syncTime before touch failed: $e');
-    }
-
     _sessionStart = DateTime.now();
     touchCounter.tapCount = 0;
-    try {
-      await touchCounter.start();
-    } on PlatformException catch (e) {
-      debugPrint('[ROSARY] touch start failed: ${e.code} ${e.message}');
-      if (!mounted) return;
-      final message = e.code == 'NOT_CONNECTED'
-          ? '스마트링이 연결되어 있지 않습니다.\n설정에서 반지를 다시 연결해 주세요.'
-          : '반지 터치 모드를 켜지 못했어요.\n연결 상태를 확인한 뒤 다시 시도해 주세요.';
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(message)),
-      );
-      return;
-    } catch (e) {
-      debugPrint('[ROSARY] touch start failed: $e');
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('반지 터치 모드를 켜지 못했어요.\n연결 상태를 확인한 뒤 다시 시도해 주세요.'),
-        ),
-      );
-      return;
-    }
+    await touchCounter.start();
     setState(() {
       _isRecording = true;
     });
@@ -414,10 +385,10 @@ class _CatholicRosaryScreenState extends State<CatholicRosaryScreen>
         floatingActionButton: FloatingActionButton(
           onPressed: () {
             if (_isRecording) {
-              _controller.forward();
-              setState(() {
-                count++;
-              });
+              touchCounter.increment();
+              if (!_controller.isAnimating) {
+                _controller.forward();
+              }
             }
           },
           backgroundColor: Colors.white,

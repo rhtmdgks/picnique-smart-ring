@@ -216,13 +216,12 @@ class MyForegroundService : Service() {
     }
 
     private suspend fun maybeCollectHealthData(force: Boolean) {
-        val now = System.currentTimeMillis()
-        if (!force && now - lastCollectMs < MIN_COLLECT_GAP_MS) return
-        lastCollectMs = now
-
-        bridge.collectAndQueue(this@MyForegroundService)
-        maybeCheckBattery(force = true)
-        Log.i(TAG, "background health data queued")
+        val ok = bridge.collectHealthIfIdle(this@MyForegroundService, force)
+        if (ok) {
+            lastCollectMs = System.currentTimeMillis()
+            maybeCheckBattery(force = true)
+            Log.i(TAG, "background health data queued")
+        }
     }
 
     private fun startAsForeground() {

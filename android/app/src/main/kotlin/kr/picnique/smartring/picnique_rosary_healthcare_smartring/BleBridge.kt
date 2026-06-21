@@ -53,7 +53,6 @@ import com.oudmon.ble.base.communication.rsp.ReadHeartRateRsp
 import com.oudmon.ble.base.communication.rsp.StartHeartRateRsp
 import com.oudmon.ble.base.communication.rsp.SetTimeRsp
 import com.oudmon.ble.base.communication.rsp.BpDataRsp
-import com.oudmon.ble.base.communication.req.TouchControlReq
 import com.oudmon.ble.base.communication.req.CameraReq
 import com.oudmon.ble.base.communication.rsp.CameraNotifyRsp
 import com.oudmon.ble.base.request.ReadRequest
@@ -81,13 +80,6 @@ private fun ensureLargeDataNotifyEnabled() {
         Log.i("LargeData", "Serial-port notify enabled")
     }
 }
-
-data class RingTouchEvent(
-    val type: String,
-    val code: Int,
-    val rawHex: String
-)
-
 
 
 class OneShotResult(private val delegate: MethodChannel.Result) : MethodChannel.Result {
@@ -119,52 +111,22 @@ class EventEmitter : EventChannel.StreamHandler {
     override fun onListen(arguments: Any?, events: EventChannel.EventSink?) { sink = events }
     override fun onCancel(arguments: Any?) { sink = null }
     fun emit(event: Map<String, Any?>) { sink?.success(event) }
-    fun sendRingTouch(count: Int, hex: String) {
-        sink?.success(
-            mapOf(
-                "type" to "ringTouch",
-                "count" to count,
-                "hex" to hex,
-            )
-        )
-    }
 }
 
-class BleBridge(private val appContext: Context) {
+class BleBridge(private val appContext: Context) : RingMeasurementSessionHost {
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    @Volatile
-    private var touchCount: Int = 0
+    val measurementSession = RingMeasurementSession(this)
+
+    private var healthEventSink: ((Any?) -> Unit)? = null
+
+    fun setHealthEventSink(sink: ((Any?) -> Unit)?) {
+        healthEventSink = sink
+    }
 
     // Expose as StreamHandler for EventChannel
     private val emitter = EventEmitter()
     val eventStreamHandler: EventChannel.StreamHandler = emitter
-
-    private var simpleTouchLoggingEnabled = false
-
-    val isSimpleTouchLoggingEnabled: Boolean
-        get() = simpleTouchLoggingEnabled
-
-    private fun sendTouchControlCommand(appType: Int, touchOn: Boolean, strength: Int) {
-        CommandHandle.getInstance().executeReqCmdNoCallback(
-            TouchControlReq.getWriteInstance(
-                appType,
-                touchOn,
-                strength
-            )
-        )
-    }
-
-    /// 수동 건강 측정 직전: 터치 모드(3·8)를 끔
-    private fun releaseTouchModeForManualMeasurement() {
-        if (simpleTouchLoggingEnabled) {
-            simpleTouchLoggingEnabled = false
-        }
-        try {
-            sendTouchControlCommand(appType = 0, touchOn = false, strength = 1)
-            Log.i(TAG, "releaseTouchModeForManualMeasurement: appType=0")
-        } catch (_: Throwable) { }
-    }
 
     private fun mapSpo2DeviceError(errCode: Int): Triple<String, String, Map<String, Any>> {
         val details = mapOf("deviceErrCode" to errCode)
@@ -208,23 +170,7 @@ class BleBridge(private val appContext: Context) {
         }
     }
 
-    fun setRingTouchMode(appType: Int, touchOn: Boolean, strength: Int, result: MethodChannel.Result) {
-        try {
-            sendTouchControlCommand(appType = appType, touchOn = touchOn, strength = strength)
-            simpleTouchLoggingEnabled = appType == 3 && touchOn
-            Log.i(TAG, "setRingTouchMode: appType=$appType touchOn=$touchOn strength=$strength")
-            result.success(true)
-        } catch (t: Throwable) {
-            Log.e(TAG, "setRingTouchMode failed", t)
-            result.error("TOUCH_MODE_FAIL", t.message, null)
-        }
-    }
-
     private var realtimeListener: DeviceNotifyListener? = null
-
-    fun getTouchCount(): Int {
-        return QcRawReceiver.touchCount  // companion object 값 읽기
-    }
 
     // ---- Scan callback skeleton ----
     private val scanCallback = object : ScanWrapperCallback {
@@ -643,22 +589,6 @@ class BleBridge(private val appContext: Context) {
             BleOperateManager.getInstance().addOutDeviceListener(ListenerKey.All, listener)
 
             realtimeListener = listener
-
-            if (simpleTouchLoggingEnabled) {
-                try {
-                    sendTouchControlCommand(appType = 3, touchOn = true, strength = 1)
-                    Log.i(TAG, "re-applied rosary touch mode (3) after realtime notifications")
-                } catch (t: Throwable) {
-                    Log.w(TAG, "touch re-apply after realtime failed", t)
-                }
-            } else {
-                try {
-                    sendTouchControlCommand(appType = 8, touchOn = true, strength = 1)
-                    Log.i(TAG, "re-applied HR measure touch mode (8) after realtime notifications")
-                } catch (t: Throwable) {
-                    Log.w(TAG, "HR touch mode re-apply after realtime failed", t)
-                }
-            }
 
             result.success(true)
         } catch (t: Throwable) {
@@ -1223,20 +1153,32 @@ class BleBridge(private val appContext: Context) {
 
 
 
-    fun syncManualHeartRate(result: MethodChannel.Result) {
-        releaseTouchModeForManualMeasurement()
+    private fun wrapManualResult(
+        result: MethodChannel.Result,
+        onComplete: () -> Unit,
+    ): MethodChannel.Result = object : MethodChannel.Result {
+        override fun success(r: Any?) {
+            result.success(r)
+            onComplete()
+        }
 
+        override fun error(code: String, msg: String?, details: Any?) {
+            result.error(code, msg, details)
+            onComplete()
+        }
+
+        override fun notImplemented() {
+            result.notImplemented()
+            onComplete()
+        }
+    }
+
+    fun syncManualHeartRate(result: MethodChannel.Result) {
+        measurementSession.resetToIdle()
         val main = android.os.Handler(android.os.Looper.getMainLooper())
         val replied = java.util.concurrent.atomic.AtomicBoolean(false)
         val TIMEOUT_MS = 45_000L
-        val MIN_MEASURE_MS = 5_000L
-        val startedAt = System.currentTimeMillis()
-        var latestBpm = 0
-    
-        // 기존:
-// fun u8(b: Byte?): Int = (b?.toInt() ?: 0) and 0xFF
 
-        // 교체: 어떤 숫자형이 와도 0~255로 정규화
         fun u8(x: Any?): Int = when (x) {
             is Byte  -> x.toInt() and 0xFF
             is Short -> x.toInt() and 0xFF
@@ -1244,127 +1186,70 @@ class BleBridge(private val appContext: Context) {
             is Number-> x.toInt() and 0xFF
             else     -> 0
         }
+        fun optUxx(obj: Any, field: String): Int? = try {
+            val f = obj.javaClass.getDeclaredField(field).apply { isAccessible = true }
+            when (val v = f.get(obj)) {
+                is Byte  -> v.toInt() and 0xFF
+                is Short -> v.toInt() and 0xFFFF
+                is Int   -> v
+                is Number-> v.toInt()
+                else     -> null
+            }
+        } catch (_: Throwable) { null }
 
-        // (옵션) 0~65535 정규화가 필요할 때
-        fun u16(x: Any?): Int = when (x) {
-            is Short -> x.toInt() and 0xFFFF
-            is Int   -> x and 0xFFFF
-            is Number-> x.toInt() and 0xFFFF
-            is Byte  -> x.toInt() and 0xFF
-            else     -> 0
-        }
-
-        fun optUxx(obj: Any, field: String): Int? {
-            return try {
-                val f = obj.javaClass.getDeclaredField(field).apply { isAccessible = true }
-                when (val v = f.get(obj)) {
-                    is Byte  -> v.toInt() and 0xFF
-                    is Short -> v.toInt() and 0xFFFF
-                    is Int   -> v
-                    else     -> null
-                }
-            } catch (_: Throwable) { null }
-        }
         fun finishOk(payload: Map<String, Any?>) {
             if (replied.compareAndSet(false, true)) main.post { result.success(payload) }
         }
-        fun finishErr(code: String, msg: String?, details: Any? = null) {
-            if (replied.compareAndSet(false, true)) {
-                main.post { result.error(code, msg, details) }
-            }
+        fun finishErr(code: String, msg: String?) {
+            if (replied.compareAndSet(false, true)) main.post { result.error(code, msg, null) }
         }
-    
-        // 타임아웃 워치독
+
         main.postDelayed({
-            if (latestBpm > 0 && System.currentTimeMillis() - startedAt >= MIN_MEASURE_MS) {
-                finishOk(
-                    mapOf(
-                        "type" to 1,
-                        "errCode" to 0,
-                        "hr" to latestBpm,
-                        "rri" to 0,
-                        "sbp" to 0,
-                        "dbp" to 0,
-                    )
-                )
-            } else {
-                finishErr("HR_MANUAL_TIMEOUT", "no final manual HR within ${TIMEOUT_MS}ms")
-            }
+            finishErr("HR_MANUAL_TIMEOUT", "no final manual HR within ${TIMEOUT_MS}ms")
         }, TIMEOUT_MS)
-    
+
         try {
             BleOperateManager.getInstance()
                 .manualModeHeart(object : ICommandResponse<StartHeartRateRsp?> {
                     override fun onDataResponse(rsp: StartHeartRateRsp?) {
                         if (replied.get()) return
-    
-                        if (rsp == null) {
-                            return finishErr("HR_MANUAL_NULL", "StartHeartRateRsp null")
-                        }
-    
-                        // 로그: 내부 필드 보기
-                        try {
-                            val gson = Gson();
-                            android.util.Log.d("BLE", "HR(manual) rsp(json) = ${gson.toJson(rsp)}")
-                        } catch (_: Throwable) { /* ignore */ }
-    
-                        val type    = u8(rsp.type)          // 1=HR, 2=BP, 3=SpO2 (문서 기준)
+                        if (rsp == null) return finishErr("HR_MANUAL_NULL", "StartHeartRateRsp null")
+
                         val errCode = u8(rsp.errCode)
-                        val bpm     = u8(rsp.value)
-                        val sbp     = u8(rsp.sbp)
-                        val dbp     = u8(rsp.dbp)
-                        val rri     = optUxx(rsp, "rri") ?: 0
-                        val status  = optUxx(rsp, "status") ?: -1 // 일부 펌웨어에만 존재(0 진행, 1 완료)
-    
-                        android.util.Log.d(
-                            "BLE",
-                            "HR(manual) parsed: type=$type err=$errCode bpm=$bpm sbp=$sbp dbp=$dbp rri=$rri status=$status"
-                        )
-    
-                        // 1) 장치 에러 — status=0(진행) 프레임은 무시 (일부 펌웨어가 초기 errCode 보냄)
+                        val bpm = u8(rsp.value)
+                        val rri = optUxx(rsp, "rri") ?: 0
+                        val status = optUxx(rsp, "status") ?: -1
+
                         if (errCode != 0) {
-                            if (status == 0 && errCode == 1) {
-                                return
-                            }
-                            val (code, msg, details) = mapHrDeviceError(errCode)
-                            return finishErr(code, msg, details)
+                            return finishErr("HR_MANUAL_DEVICE_ERR", "Device errCode=$errCode")
                         }
 
-                        // 3) 심박(type=1) 최종 패킷 판단 — 캐시값 즉시 반환 방지
-                        when (status) {
-                            0 -> return
-                            1 -> { /* completed */ }
-                            else -> {
-                                if (System.currentTimeMillis() - startedAt < MIN_MEASURE_MS) {
-                                    return
-                                }
-                            }
+                        val isFinal = when {
+                            status >= 0 -> status == 1
+                            else -> bpm > 0
                         }
-                        if (bpm > 0) {
-                            latestBpm = bpm
-                        }
-                        if (bpm in 30..220) {
-                            return finishOk(
-                                mapOf(
-                                    "type" to type,
-                                    "errCode" to errCode,
-                                    "hr" to bpm,
-                                    "rri" to rri,
-                                    "sbp" to sbp,
-                                    "dbp" to dbp
-                                )
+                        if (!isFinal) return
+                        if (bpm <= 0) return finishErr("HR_MANUAL_EMPTY", "no HR value")
+
+                        finishOk(
+                            mapOf(
+                                "type" to 1,
+                                "errCode" to 0,
+                                "hr" to bpm,
+                                "value" to bpm,
+                                "rri" to rri,
                             )
-                        }
-
-                        // 4) 다른 타입(혈압/SpO2 등)은 여기선 성공으로 취급하지 않음(무시)
-                        // 필요하면 type==2/3 처리 분기 추가하세요.
+                        )
                     }
                 })
         } catch (t: Throwable) {
             finishErr("HR_MANUAL_START_FAIL", t.message ?: "manualModeHeart threw")
         }
     }
-    
+
+    override fun runManualHeartRate(result: MethodChannel.Result, onComplete: () -> Unit) {
+        syncManualHeartRate(wrapManualResult(result, onComplete))
+    }
 
     // ---- Blood Pressure: Auto (매시 정시) ----
     fun syncAutoBp(result: MethodChannel.Result) {
@@ -1490,26 +1375,16 @@ class BleBridge(private val appContext: Context) {
 
         // ---- Manual SpO2 ----
     fun syncManualSpO2(result: MethodChannel.Result) {
-        releaseTouchModeForManualMeasurement()
-
+        measurementSession.resetToIdle()
         val main = android.os.Handler(android.os.Looper.getMainLooper())
         val replied = java.util.concurrent.atomic.AtomicBoolean(false)
         val TIMEOUT_MS = 45_000L
-        val MIN_MEASURE_MS = 10_000L
-        val startedAt = System.currentTimeMillis()
 
         fun u8(x: Any?): Int = when (x) {
             is Byte  -> x.toInt() and 0xFF
             is Short -> x.toInt() and 0xFF
             is Int   -> x and 0xFF
             is Number-> x.toInt() and 0xFF
-            else     -> 0
-        }
-        fun u16(x: Any?): Int = when (x) {
-            is Short -> x.toInt() and 0xFFFF
-            is Int   -> x and 0xFFFF
-            is Number-> x.toInt() and 0xFFFF
-            is Byte  -> x.toInt() and 0xFF
             else     -> 0
         }
         fun optUxx(obj: Any, field: String): Int? = try {
@@ -1526,13 +1401,10 @@ class BleBridge(private val appContext: Context) {
         fun finishOk(payload: Map<String, Any?>) {
             if (replied.compareAndSet(false, true)) main.post { result.success(payload) }
         }
-        fun finishErr(code: String, msg: String?, details: Any? = null) {
-            if (replied.compareAndSet(false, true)) {
-                main.post { result.error(code, msg, details) }
-            }
+        fun finishErr(code: String, msg: String?) {
+            if (replied.compareAndSet(false, true)) main.post { result.error(code, msg, null) }
         }
 
-        // 타임아웃 워치독
         main.postDelayed({
             finishErr("SPO2_MANUAL_TIMEOUT", "no final manual SpO2 within ${TIMEOUT_MS}ms")
         }, TIMEOUT_MS)
@@ -1544,65 +1416,43 @@ class BleBridge(private val appContext: Context) {
                         if (replied.get()) return
                         if (rsp == null) return finishErr("SPO2_MANUAL_NULL", "StartHeartRateRsp null")
 
-                        // 로우 로그
-                        try {
-                            val gson = com.google.gson.GsonBuilder().serializeNulls().create()
-                            android.util.Log.d("BLE", "SpO2(manual) rsp(json) = ${gson.toJson(rsp)}")
-                        } catch (_: Throwable) {}
-
-                        val type    = u8(rsp.type)          // 문서상 3=SpO2
+                        val type = u8(rsp.type)
                         val errCode = u8(rsp.errCode)
-                        val spo2    = u8(rsp.value)         // SpO2 % 값
-                        val rri     = optUxx(rsp, "rri") ?: 0
-                        val status  = optUxx(rsp, "status") ?: -1 // 0=진행, 1=완료 (있을 때만)
+                        val spo2 = u8(rsp.value)
+                        val rri = optUxx(rsp, "rri") ?: 0
+                        val status = optUxx(rsp, "status") ?: -1
 
-                        android.util.Log.d(
-                            "BLE",
-                            "SpO2(manual) parsed: type=$type err=$errCode spo2=$spo2 rri=$rri status=$status"
-                        )
-
-                        // 1) 장치 에러 — status=0(진행) 프레임은 무시 (일부 펌웨어가 초기 errCode 보냄)
                         if (errCode != 0) {
-                            if (status == 0 && errCode == 1) {
-                                return
-                            }
-                            val (code, msg, details) = mapSpo2DeviceError(errCode)
-                            return finishErr(code, msg, details)
+                            return finishErr("SPO2_MANUAL_DEVICE_ERR", "Device errCode=$errCode")
                         }
 
-                        // 3) 최종 프레임 판단 — status=0(진행) 무시, 캐시값 즉시 반환 방지
-                        when (status) {
-                            0 -> return
-                            1 -> { /* completed */ }
-                            else -> {
-                                if (System.currentTimeMillis() - startedAt < MIN_MEASURE_MS) {
-                                    return
-                                }
-                            }
+                        val isFinal = when {
+                            status >= 0 -> status == 1
+                            else -> spo2 > 0
                         }
+                        if (!isFinal) return
                         if (spo2 <= 0 || spo2 > 100) {
-                            if (status == 1) {
-                                return finishErr(
-                                    "SPO2_MANUAL_RANGE",
-                                    "out-of-range spo2=$spo2"
-                                )
-                            }
-                            return
+                            return finishErr("SPO2_MANUAL_RANGE", "out-of-range spo2=$spo2")
                         }
 
-                        return finishOk(
+                        finishOk(
                             mapOf(
-                                "type" to (if (type != 0) type else 3), // 안전하게 3으로 보정
+                                "type" to (if (type != 0) type else 3),
                                 "errCode" to 0,
                                 "spo2" to spo2,
-                                "rri" to rri
+                                "value" to spo2,
+                                "rri" to rri,
                             )
                         )
                     }
                 })
         } catch (t: Throwable) {
-            finishErr("SPO2_MANUAL_START_FAIL", t.message ?: "manualModeSpO2 threw")
+            finishErr("SPO2_MANUAL_FAIL", t.message)
         }
+    }
+
+    override fun runManualSpO2(result: MethodChannel.Result, onComplete: () -> Unit) {
+        syncManualSpO2(wrapManualResult(result, onComplete))
     }
 
 
@@ -1657,8 +1507,7 @@ class BleBridge(private val appContext: Context) {
 
     // ---- Manual Pressure (스트레스) ----
     fun syncManualPressure(result: MethodChannel.Result) {
-        releaseTouchModeForManualMeasurement()
-
+        measurementSession.resetToIdle()
         val main = android.os.Handler(android.os.Looper.getMainLooper())
         val replied = java.util.concurrent.atomic.AtomicBoolean(false)
         val TIMEOUT_MS = 45_000L
@@ -1668,13 +1517,6 @@ class BleBridge(private val appContext: Context) {
             is Short -> x.toInt() and 0xFF
             is Int   -> x and 0xFF
             is Number-> x.toInt() and 0xFF
-            else     -> 0
-        }
-        fun u16(x: Any?): Int = when (x) {
-            is Short -> x.toInt() and 0xFFFF
-            is Int   -> x and 0xFFFF
-            is Number-> x.toInt() and 0xFFFF
-            is Byte  -> x.toInt() and 0xFF
             else     -> 0
         }
         fun optUxx(obj: Any, field: String): Int? = try {
@@ -1695,7 +1537,6 @@ class BleBridge(private val appContext: Context) {
             if (replied.compareAndSet(false, true)) main.post { result.error(code, msg, null) }
         }
 
-        // 타임아웃
         main.postDelayed({
             finishErr("PRESSURE_MANUAL_TIMEOUT", "no final manual Pressure within ${TIMEOUT_MS}ms")
         }, TIMEOUT_MS)
@@ -1707,55 +1548,46 @@ class BleBridge(private val appContext: Context) {
                         if (replied.get()) return
                         if (rsp == null) return finishErr("PRESSURE_MANUAL_NULL", "StartHeartRateRsp null")
 
-                        try {
-                            val gson = com.google.gson.GsonBuilder().serializeNulls().create()
-                            android.util.Log.d("BLE", "Pressure(manual) rsp(json) = ${gson.toJson(rsp)}")
-                        } catch (_: Throwable) { }
-
-                        val type    = optUxx(rsp, "type") ?: -1  // Pressure는 type 정의가 모델별 제각각일 수 있음
+                        val type = optUxx(rsp, "type") ?: -1
                         val errCode = u8(rsp.errCode)
-                        val value   = u8(rsp.value)             // 많은 기기에서 'stress/pressure 점수'가 여기 들어옵니다
-                        val sbp     = u8(rsp.sbp)               // 혹시 BP가 이 경로로 올 경우 대비
-                        val dbp     = u8(rsp.dbp)
-                        val rri     = optUxx(rsp, "rri") ?: 0   // 일부 펌웨어만 존재
-                        val status  = optUxx(rsp, "status") ?: -1
+                        val value = u8(rsp.value)
+                        val sbp = u8(rsp.sbp)
+                        val dbp = u8(rsp.dbp)
+                        val rri = optUxx(rsp, "rri") ?: 0
 
-                        android.util.Log.d(
-                            "BLE",
-                            "Pressure(manual) parsed: type=$type err=$errCode value=$value sbp=$sbp dbp=$dbp rri=$rri status=$status"
-                        )
-
-                        if (errCode != 0) return finishErr("PRESSURE_MANUAL_DEVICE_ERR", "Device errCode=$errCode")
-
-                        // 최종 판단: value(스트레스 점수) > 0 이면 OK
+                        if (errCode != 0) {
+                            return finishErr("PRESSURE_MANUAL_DEVICE_ERR", "Device errCode=$errCode")
+                        }
                         if (value > 0) {
                             return finishOk(
                                 mapOf(
                                     "type" to type,
                                     "errCode" to 0,
-                                    "pressure" to value,  // ★ Flutter에서 쓰실 키
-                                    "rri" to rri
+                                    "pressure" to value,
+                                    "value" to value,
+                                    "rri" to rri,
                                 )
                             )
                         }
-
-                        // 혹시 이 경로로 혈압이 올 때(모델/SDK 상 혼재하는 경우 대비)
                         if (sbp > 0 || dbp > 0) {
                             return finishOk(
                                 mapOf(
                                     "type" to type,
                                     "errCode" to 0,
                                     "sbp" to sbp,
-                                    "dbp" to dbp
+                                    "dbp" to dbp,
                                 )
                             )
                         }
-                        // 그 외에는 최종 프레임을 더 기다림
                     }
                 })
         } catch (t: Throwable) {
             finishErr("PRESSURE_MANUAL_FAIL", t.message)
         }
+    }
+
+    override fun runManualPressure(result: MethodChannel.Result, onComplete: () -> Unit) {
+        syncManualPressure(wrapManualResult(result, onComplete))
     }
 
 
@@ -2011,38 +1843,6 @@ class BleBridge(private val appContext: Context) {
         } catch (t: Throwable) { result.error("TEMP_ONCE_FAIL", t.message, null) }
     }
 
-
-    fun enableSimpleTouchLogging(result: MethodChannel.Result) {
-        try {
-            sendTouchControlCommand(appType = 3, touchOn = true, strength = 1)
-
-            QcRawReceiver.touchCount = 0
-            simpleTouchLoggingEnabled = true
-            Log.i(TAG, "enableSimpleTouchLogging: appType=3 strength=1")
-            result.success(true)
-        } catch (t: Throwable) {
-            Log.e(TAG, "enableSimpleTouchLogging failed", t)
-            result.error("TOUCH_LOG_FAIL", t.message, null)
-        }
-    }
-
-    fun disableSimpleTouchLogging(result: MethodChannel.Result) {
-        try {
-            sendTouchControlCommand(appType = 8, touchOn = true, strength = 1)
-            simpleTouchLoggingEnabled = false
-            Log.i(TAG, "disableSimpleTouchLogging: restored appType=8")
-            result.success(true)
-        } catch (t: Throwable) {
-            Log.e(TAG, "disableSimpleTouchLogging failed", t)
-            result.error("TOUCH_LOG_DISABLE_FAIL", t.message, null)
-        }
-    }
-
-    fun onRingTouched(count: Int, hex: String) {
-        // 그냥 eventStreamHandler 에 위임
-        emitter.sendRingTouch(count, hex)
-    }
-
     private object MethodResult : MethodChannel.Result {
         fun noop(): MethodChannel.Result = this
         override fun success(result: Any?) {}
@@ -2057,5 +1857,32 @@ class BleBridge(private val appContext: Context) {
             sb.append(String.format("%02X", b))
         }
         return sb.toString()
+    }
+
+    override suspend fun performCollect(context: Context) {
+        collectAndQueue(context)
+    }
+
+    override fun notifyHealthDataReady() {
+        healthEventSink?.invoke(mapOf("type" to "healthDataReady"))
+    }
+
+    suspend fun collectHealthIfIdle(context: Context, force: Boolean): Boolean =
+        measurementSession.collectHealthIfIdle(context, force)
+
+    fun executeManualMeasurement(typeWire: String, result: MethodChannel.Result) {
+        when (ManualMeasureType.fromWire(typeWire)) {
+            ManualMeasureType.HEART_RATE -> syncManualHeartRate(result)
+            ManualMeasureType.BLOOD_OXYGEN -> syncManualSpO2(result)
+            ManualMeasureType.STRESS -> syncManualPressure(result)
+            null -> result.error("MEASURE_INVALID_TYPE", "unknown type $typeWire", null)
+        }
+    }
+
+    val isMeasurementBusy: Boolean
+        get() = measurementSession.isBusy
+
+    fun resetMeasurementSession() {
+        measurementSession.resetToIdle()
     }
 }

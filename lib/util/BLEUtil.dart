@@ -179,36 +179,65 @@ Future<bool> isBluetoothReady({
   }
 }
 
-/// 반지 자동 측정(심박·산소·스트레스)을 켠다.
+/// 연결 직후 자동 모니터링 설정 간격(iOS BLE 안정화).
+const Duration _monitoringWriteGap = Duration(milliseconds: 600);
+
+Future<void> _writeMonitoringWithRetry(
+  String method,
+  Map<String, dynamic> args, {
+  int attempts = 3,
+}) async {
+  for (var i = 0; i < attempts; i++) {
+    if (i > 0) {
+      await Future<void>.delayed(_monitoringWriteGap);
+    }
+    try {
+      await _bleInvoke(method, args);
+      debugPrint('[MONITOR] $method ok');
+      return;
+    } catch (e) {
+      debugPrint('[MONITOR] $method attempt ${i + 1}/$attempts failed: $e');
+    }
+  }
+}
+
+/// 반지 자동 측정(심박·산소·HRV·스트레스)을 켠다.
 ///
-/// 연결이 끊기거나 앱이 종료되어도 반지 내부 메모리에 측정값이 쌓이도록
-/// 펌웨어 설정을 기록한다. SpO₂·스트레스 간격은 SDK가 on/off만 제공한다.
+/// QC 링은 **HRV 스케줄 ON → 스트레스 산출** 파이프라인이다.
+/// HRV 없이 writePressureSetting만 하면 set/get fail -1 이 자주 난다.
+/// picnique_ring 참고: HR → SpO₂ → Pressure → **HRV** 순서.
 Future<void> enableRingAutoMonitoring({
   MethodChannel platform = _blePlatformChannel,
 }) async {
+  await BleCommandQueue.waitUntilManualIdle();
+
   const hrInterval = RingMeasurementPolicy.ringAutoHeartIntervalMinutes;
-  try {
-    await _bleInvoke('writeHrSetting', {
-      'isEnable': true,
-      'interval': hrInterval,
-    });
-  } catch (e) {
-    debugPrint('[ERR] writeHrSetting: $e');
+
+  await _writeMonitoringWithRetry('writeHrSetting', {
+    'isEnable': true,
+    'interval': hrInterval,
+  });
+  if (Platform.isIOS) {
+    await Future<void>.delayed(_monitoringWriteGap);
   }
-  try {
-    await _bleInvoke('writeSpo2Setting', {
-      'isEnable': true,
-    });
-  } catch (e) {
-    debugPrint('[ERR] writeSpo2Setting: $e');
+
+  await _writeMonitoringWithRetry('writeSpo2Setting', {
+    'isEnable': true,
+  });
+  if (Platform.isIOS) {
+    await Future<void>.delayed(_monitoringWriteGap);
   }
-  try {
-    await _bleInvoke('writePressureSetting', {
-      'isEnable': true,
-    });
-  } catch (e) {
-    debugPrint('[ERR] writePressureSetting: $e');
+
+  await _writeMonitoringWithRetry('writePressureSetting', {
+    'isEnable': true,
+  });
+  if (Platform.isIOS) {
+    await Future<void>.delayed(_monitoringWriteGap);
   }
+
+  await _writeMonitoringWithRetry('writeHrvSetting', {
+    'isEnable': true,
+  });
 }
 
 /// 한 번에: 현재 설정 읽어서 print → 전부 ON 시도 → 결과 재확인 print
@@ -911,7 +940,9 @@ Future<void> syncRecent3DaysHeartToDb(
       final bpm = hrArr[i];
       if (!includeZeros && bpm == 0) continue;
 
-      final sampleTime = dayStart.add(Duration(minutes: 5 * i)); // 로컬시각
+      final sampleTime = dayStart.add(
+        Duration(minutes: RingMeasurementPolicy.ringAutoHeartIntervalMinutes * i),
+      );
 
       rows.add(HeartDetailsCompanion.insert(date: sampleTime, bpm: bpm));
     }

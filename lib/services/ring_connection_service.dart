@@ -12,7 +12,6 @@ import 'package:picnique_rosary_healthcare_smartring/services/ring_health_accumu
 import 'package:picnique_rosary_healthcare_smartring/services/ring_background_keepalive.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_background_sync.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_live_activity.dart';
-import 'package:picnique_rosary_healthcare_smartring/services/ring_touch_mode_service.dart';
 import 'package:picnique_rosary_healthcare_smartring/util/BLEUtil.dart';
 
 /// 저장된 반지 주소로 BLE 연결·실시간 추적을 수행한다.
@@ -104,8 +103,6 @@ class RingConnectionService {
         return true;
       }
 
-      RingTouchModeService.instance.onConnected();
-
       final ready = await _waitDeviceReady();
       if (!ready) {
         debugPrint('[CONNECT] device ready check failed, keeping connection');
@@ -120,7 +117,20 @@ class RingConnectionService {
         await fgChannel.invokeMethod('startService');
       } catch (_) {}
 
-      await enableRingAutoMonitoring();
+      if (Platform.isIOS) {
+        unawaited(
+          Future<void>.delayed(const Duration(seconds: 15), () async {
+            try {
+              await BleCommandQueue.waitUntilManualIdle();
+              await enableRingAutoMonitoring();
+            } catch (e) {
+              debugPrint('[CONNECT] delayed auto monitoring failed: $e');
+            }
+          }),
+        );
+      } else {
+        await enableRingAutoMonitoring();
+      }
 
       await RingBackgroundKeepalive.start(
         address: address,
@@ -170,15 +180,47 @@ class RingConnectionService {
 
   static Future<bool> syncTimeAfterConnect() async {
     try {
-      await BleCommandQueue
-          .invoke('syncTimeAndGetCoreFeatures')
+      final features = await BleCommandQueue
+          .invoke<dynamic>('syncTimeAndGetCoreFeatures')
           .timeout(const Duration(seconds: 15));
       debugPrint('[CONNECT] syncTime done');
+      if (features is Map) {
+        final keys = features.keys.map((k) => k.toString()).toList();
+        String? featureValue(String token) {
+          for (final entry in features.entries) {
+            final key = entry.key.toString();
+            if (key.contains(token)) return entry.value?.toString();
+          }
+          return null;
+        }
+
+        final stress = featureValue('Stress') ?? featureValue('stress');
+        final hrv = featureValue('HRV') ?? featureValue('Hrv');
+        debugPrint('[CONNECT] ring features stress=$stress hrv=$hrv keys=$keys');
+      }
       return true;
     } catch (e) {
       debugPrint('[CONNECT] syncTime failed (non-fatal): $e');
       return false;
     }
+  }
+
+  /// 연결은 됐지만 SDK(setTime) 준비가 안 된 경우 — 측정 전 재시도.
+  static Future<bool> ensureSdkReady(Ring ring) async {
+    if (!ring.isConnected) return false;
+    if (ring.sdkReady) return true;
+
+    if (Platform.isIOS) {
+      await Future<void>.delayed(const Duration(milliseconds: 800));
+    }
+
+    var ok = await syncTimeAfterConnect();
+    if (!ok && Platform.isIOS) {
+      await Future<void>.delayed(const Duration(seconds: 1));
+      ok = await syncTimeAfterConnect();
+    }
+    ring.setSdkReady(ok);
+    return ok;
   }
 
   static Future<bool> _waitDeviceReady() async {

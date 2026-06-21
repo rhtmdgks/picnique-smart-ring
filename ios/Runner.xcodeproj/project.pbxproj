@@ -17,6 +17,7 @@
 		97C146FE1CF9000F007C117D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FD1CF9000F007C117D /* Assets.xcassets */; };
 		97C147011CF9000F007C117D /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FF1CF9000F007C117D /* LaunchScreen.storyboard */; };
 		9F3A9C2C8E5B4C3D00112233 /* BleBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F3A9C2B8E5B4C3D00112233 /* BleBridge.swift */; };
+		B1R2M3S4E5S6S7I8O9N0002 /* RingMeasurementSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1R2M3S4E5S6S7I8O9N0001 /* RingMeasurementSession.swift */; };
 		A1C2D3E41F0A000100010001 /* RingChargingLiveActivityManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C2D3E41F0A000100010002 /* RingChargingLiveActivityManager.swift */; };
 		A1C2D3E41F0A000100010003 /* RingChargingAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C2D3E41F0A000100010004 /* RingChargingAttributes.swift */; };
 		C3063B170E752747BE8A2DA5 /* Pods_Runner.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = EFA04E2E74DFF4A58C74C3FE /* Pods_Runner.framework */; };
@@ -69,6 +70,7 @@
 		97C147001CF9000F007C117D /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/LaunchScreen.storyboard; sourceTree = "<group>"; };
 		97C147021CF9000F007C117D /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		9F3A9C2B8E5B4C3D00112233 /* BleBridge.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = BleBridge.swift; sourceTree = "<group>"; };
+		B1R2M3S4E5S6S7I8O9N0001 /* RingMeasurementSession.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = RingMeasurementSession.swift; sourceTree = "<group>"; };
 		A1C2D3E41F0A000100010002 /* RingChargingLiveActivityManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = RingChargingLiveActivityManager.swift; sourceTree = "<group>"; };
 		A1C2D3E41F0A000100010004 /* RingChargingAttributes.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = RingChargingAttributes.swift; path = ../Shared/RingChargingAttributes.swift; sourceTree = "<group>"; };
 		B51C98AED1478F059EB81BFD /* Pods_RunnerTests.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_RunnerTests.framework; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -176,6 +178,7 @@
 				74858FAE1ED2DC5600515810 /* AppDelegate.swift */,
 				7884E8672EC3CC0400C636F2 /* SceneDelegate.swift */,
 				9F3A9C2B8E5B4C3D00112233 /* BleBridge.swift */,
+				B1R2M3S4E5S6S7I8O9N0001 /* RingMeasurementSession.swift */,
 				A1C2D3E41F0A000100010002 /* RingChargingLiveActivityManager.swift */,
 				A1C2D3E41F0A000100010004 /* RingChargingAttributes.swift */,
 				74858FAD1ED2DC5600515810 /* Runner-Bridging-Header.h */,
@@ -416,6 +419,7 @@
 				1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */,
 				7884E8682EC3CC0700C636F2 /* SceneDelegate.swift in Sources */,
 				9F3A9C2C8E5B4C3D00112233 /* BleBridge.swift in Sources */,
+				B1R2M3S4E5S6S7I8O9N0002 /* RingMeasurementSession.swift in Sources */,
 				A1C2D3E41F0A000100010001 /* RingChargingLiveActivityManager.swift in Sources */,
 				A1C2D3E41F0A000100010003 /* RingChargingAttributes.swift in Sources */,
 			);

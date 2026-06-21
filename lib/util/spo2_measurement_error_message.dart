@@ -41,6 +41,14 @@ String spo2MeasurementErrorMessage(PlatformException error) {
       }
       return '산소포화도 측정을 완료하지 못했어요.\n'
           '잠시 후 다시 시도해 주세요.';
+    case 'SESSION_BUSY':
+      return '반지가 다른 측정을 진행 중이에요.\n'
+          '잠시 기다렸다가 다시 시도해 주세요.';
+    case 'MEASURE_INVALID_RESPONSE':
+    case 'MEASURE_SESSION_TIMEOUT':
+    case 'MEASURE_CHANNEL_TIMEOUT':
+      return '측정 응답이 지연됐어요.\n'
+          '손가락을 움직이지 않고 다시 측정해 주세요.';
     case 'NOT_CONNECTED':
       return '스마트링이 연결되어 있지 않아요.\n'
           '설정에서 반지 연결을 확인해 주세요.';

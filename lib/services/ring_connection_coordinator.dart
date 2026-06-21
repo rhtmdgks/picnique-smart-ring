@@ -15,7 +15,6 @@ import 'package:picnique_rosary_healthcare_smartring/services/ring_live_activity
 import 'package:picnique_rosary_healthcare_smartring/services/health_data_refresh_notifier.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_health_accumulation.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_pending_import.dart';
-import 'package:picnique_rosary_healthcare_smartring/services/ring_touch_mode_service.dart';
 import 'package:picnique_rosary_healthcare_smartring/util/BLEUtil.dart';
 
 /// BLE 연결 유지·자동 재연결·충전/배터리 이벤트를 중앙에서 처리한다.
@@ -173,7 +172,6 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
   void _handleDisconnected() {
     final ring = _ring;
     if (ring == null) return;
-    RingTouchModeService.instance.onDisconnected();
     unawaited(_liveActivity?.stop());
     unawaited(ring.markDisconnected(forgetSaved: false));
     if (_manualDisconnectRequested) {
@@ -291,8 +289,6 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
       return;
     }
 
-    RingTouchModeService.instance.onConnected();
-
     final live = _liveActivity;
     if (live != null) {
       await live.start();
@@ -302,8 +298,21 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
       await BleCommandQueue.invoke('enableRealtimeNotifications');
     } catch (_) {}
 
-    // 반지 펌웨어 자동 측정(끊김 시 내부 메모리 축적)을 먼저 기록한다.
-    await enableRingAutoMonitoring();
+    // 반지 펌웨어 자동 측정 — iOS는 연결 직후 BLE가 바쁠 때 수동 측정과 충돌하므로 잠시 뒤에 켠다.
+    if (Platform.isIOS) {
+      unawaited(
+        Future<void>.delayed(const Duration(seconds: 15), () async {
+          try {
+            await BleCommandQueue.waitUntilManualIdle();
+            await enableRingAutoMonitoring();
+          } catch (e) {
+            debugPrint('[CONNECT] delayed auto monitoring failed: $e');
+          }
+        }),
+      );
+    } else {
+      await enableRingAutoMonitoring();
+    }
 
     try {
       await _fg.invokeMethod('startService');

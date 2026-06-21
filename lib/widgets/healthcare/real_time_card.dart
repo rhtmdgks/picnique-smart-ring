@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_svg/svg.dart';
@@ -5,13 +7,13 @@ import 'package:picnique_rosary_healthcare_smartring/core/constants/colors.dart'
 import 'package:picnique_rosary_healthcare_smartring/core/constants/fonts.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/enum/data_type.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/ring.dart';
-import 'package:picnique_rosary_healthcare_smartring/services/ble_command_queue.dart';
-import 'package:picnique_rosary_healthcare_smartring/services/ring_touch_mode_service.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/ring_measurement_service.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/ring_connection_service.dart';
 import 'package:picnique_rosary_healthcare_smartring/util/measurement_error_message.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/button.dart';
 import 'package:provider/provider.dart';
 
-class RealTimeDataCard extends StatelessWidget {
+class RealTimeDataCard extends StatefulWidget {
   final String iconSvgPath, realTime;
   final Widget realTimeData;
   final bool isButtonExist;
@@ -30,20 +32,12 @@ class RealTimeDataCard extends StatelessWidget {
     this.onMeasureSuccess,
   });
 
-  // 공용 BLE 채널 — iOS에서는 BleCommandQueue로 직렬화해야 연결 후처리와 충돌하지 않는다.
+  @override
+  State<RealTimeDataCard> createState() => _RealTimeDataCardState();
+}
 
-  static ManualMeasurementType _manualType(DataType dataType) {
-    switch (dataType) {
-      case DataType.HeartRate:
-        return ManualMeasurementType.heartRate;
-      case DataType.Oxygen:
-        return ManualMeasurementType.spo2;
-      case DataType.Stress:
-        return ManualMeasurementType.stress;
-      default:
-        return ManualMeasurementType.other;
-    }
-  }
+class _RealTimeDataCardState extends State<RealTimeDataCard> {
+  bool _measuring = false;
 
   static String _notReadyMessage(Ring ring) {
     if (!ring.isConnected) {
@@ -59,45 +53,64 @@ class RealTimeDataCard extends StatelessWidget {
       case DataType.HeartRate:
         return '심박수 측정 중…\n약 10~30초 걸려요.\n손가락을 움직이지 마세요.';
       case DataType.Stress:
-        return '스트레스 측정 중…\n약 20~40초 걸려요.\n손가락을 움직이지 마세요.';
+        return Platform.isIOS
+            ? '스트레스 측정 중…\n약 20~60초 걸릴 수 있어요.\n반지를 꽉 끼우고 손가락을 움직이지 마세요.'
+            : '스트레스 측정 중…\n약 20~40초 걸려요.\n손가락을 움직이지 마세요.';
       default:
         return '측정 중…';
     }
   }
 
+  String _okMessage(DataType dataType, Map<dynamic, dynamic> res) {
+    switch (dataType) {
+      case DataType.HeartRate:
+        final hr = (res['hr'] ?? res['value'] ?? 0).toString();
+        final rri = res['rri'];
+        return rri != null ? '심박수 $hr bpm (RRI: $rri)' : '심박수 $hr bpm';
+      case DataType.Oxygen:
+        final spo2 = (res['spo2'] ?? res['value'] ?? 0).toString();
+        return '혈중산소 $spo2%';
+      case DataType.Stress:
+        final pressure = (res['pressure'] ?? res['value'] ?? 0).toString();
+        return '스트레스 $pressure';
+      default:
+        return '측정 완료';
+    }
+  }
+
   Future<void> _handleMeasure(BuildContext context) async {
+    if (_measuring) return;
     HapticFeedback.lightImpact();
 
     final ring = context.read<Ring>();
-    if (!ring.isConnected || !ring.sdkReady) {
+    if (!ring.isConnected) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(_notReadyMessage(ring))),
       );
       return;
     }
 
-    // 어떤 측정을 호출할지 결정
-    String method;
-    Map<String, Object?> args = const {};
-    final manualType = _manualType(dataType);
-    switch (dataType) {
-      // 프로젝트 enum에 맞춰 조정하세요 ↓↓↓
-      case DataType.HeartRate: // 심박
-        method = 'syncManualHeartRate';
-        break;
-      case DataType.Oxygen: // SpO₂
-        method = 'syncManualBloodOxygen';
-        break;
-      case DataType.Stress: // 스트레스(pressure)
-        method = 'syncManualPressure';
-        break;
-      default:
-        // 그 외 화면에서 버튼이 보일 일 없다면 기본은 심박
-        method = 'syncManualHeartRate';
-        break;
+    if (!ring.sdkReady) {
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => const Center(
+          child: CircularProgressIndicator(),
+        ),
+      );
+      final ready = await RingConnectionService.ensureSdkReady(ring);
+      if (!context.mounted) return;
+      Navigator.of(context, rootNavigator: true).pop();
+      if (!ready) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(_notReadyMessage(ring))),
+        );
+        return;
+      }
     }
 
-    // 진행 다이얼로그 표시
+    setState(() => _measuring = true);
+
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -115,7 +128,7 @@ class RealTimeDataCard extends StatelessWidget {
               const CircularProgressIndicator(),
               const SizedBox(height: 16),
               Text(
-                _measuringDialogMessage(dataType),
+                _measuringDialogMessage(widget.dataType),
                 textAlign: TextAlign.center,
                 style: const TextStyle(
                   color: Colors.white,
@@ -130,70 +143,37 @@ class RealTimeDataCard extends StatelessWidget {
       ),
     );
 
-    String okMsg = '측정 완료';
-    try {
-      await RingTouchModeService.instance.pauseForManualMeasurement(
-        type: manualType,
-      );
-      final res = await BleCommandQueue.invoke<dynamic>(method, args);
-
-      // 다이얼로그 닫기
+    void dismissMeasuringDialog() {
       if (!context.mounted) return;
-      Navigator.of(context, rootNavigator: true).pop();
-
-      if (res is Map) {
-        // 수신 키들은 브리지가 반환하는 맵에 맞춰 파싱
-        switch (method) {
-          case 'syncManualHeartRate':
-            {
-              final hr = (res['hr'] ?? res['value'] ?? 0).toString();
-              final rri = res['rri'];
-              okMsg = rri != null ? '심박수 $hr bpm (RRI: $rri)' : '심박수 $hr bpm';
-              break;
-            }
-          case 'syncManualBloodOxygen':
-            {
-              final spo2 = (res['spo2'] ?? res['value'] ?? 0).toString();
-              okMsg = '혈중산소 $spo2%';
-              break;
-            }
-          case 'syncManualPressure':
-            {
-              final pressure = (res['pressure'] ?? res['value'] ?? 0)
-                  .toString();
-              okMsg = '스트레스 $pressure';
-              break;
-            }
-          case 'syncManualBp':
-            {
-              final sbp = res['sbp'] ?? 0;
-              final dbp = res['dbp'] ?? 0;
-              okMsg = '혈압 $sbp/$dbp mmHg';
-              break;
-            }
-        }
-        onMeasureSuccess?.call(Map<dynamic, dynamic>.from(res));
+      final nav = Navigator.of(context, rootNavigator: true);
+      if (nav.canPop()) {
+        nav.pop();
       }
+    }
 
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(okMsg)));
+    try {
+      final res = await RingMeasurementService.measureManual(widget.dataType);
 
-      // 여기서 부모에게 새로고침 신호를 주고 싶다면
-      // InheritedWidget/EventBus/Provider 등을 통해 리프레시 트리거를 날리세요.
+      if (!context.mounted) return;
+      dismissMeasuringDialog();
+
+      widget.onMeasureSuccess?.call(res);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(_okMessage(widget.dataType, res))),
+      );
     } on PlatformException catch (e) {
       if (!context.mounted) return;
-      Navigator.of(context, rootNavigator: true).pop();
+      dismissMeasuringDialog();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            measurementErrorMessage(e, dataType: dataType),
+            measurementErrorMessage(e, dataType: widget.dataType),
           ),
         ),
       );
     } catch (e) {
       if (!context.mounted) return;
-      Navigator.of(context, rootNavigator: true).pop();
+      dismissMeasuringDialog();
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text(
@@ -202,9 +182,7 @@ class RealTimeDataCard extends StatelessWidget {
         ),
       );
     } finally {
-      await RingTouchModeService.instance.resumeAfterManualMeasurement(
-        type: manualType,
-      );
+      if (mounted) setState(() => _measuring = false);
     }
   }
 
@@ -223,7 +201,7 @@ class RealTimeDataCard extends StatelessWidget {
           Row(
             children: [
               SvgPicture.asset(
-                iconSvgPath,
+                widget.iconSvgPath,
                 colorFilter: const ColorFilter.mode(
                   AppColors.lightOrange,
                   BlendMode.srcIn,
@@ -249,7 +227,7 @@ class RealTimeDataCard extends StatelessWidget {
                       ),
                       const SizedBox(width: 8),
                       Text(
-                        realTime,
+                        widget.realTime,
                         style: const TextStyle(
                           color: AppColors.lightGray,
                           fontSize: 12,
@@ -258,15 +236,18 @@ class RealTimeDataCard extends StatelessWidget {
                       ),
                     ],
                   ),
-                  realTimeData,
+                  widget.realTimeData,
                 ],
               ),
             ],
           ),
-          if (isButtonExist)
-            Button(
-              text: dataType == DataType.Rosary ? "봉헌하기" : "측정하기",
-              onTap: () => _handleMeasure(context),
+          if (widget.isButtonExist)
+            Opacity(
+              opacity: _measuring ? 0.5 : 1,
+              child: Button(
+                text: widget.dataType == DataType.Rosary ? "봉헌하기" : "측정하기",
+                onTap: _measuring ? () {} : () => _handleMeasure(context),
+              ),
             ),
         ],
       ),

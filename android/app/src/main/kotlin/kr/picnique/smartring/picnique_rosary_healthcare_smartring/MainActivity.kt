@@ -11,9 +11,6 @@ import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import com.oudmon.ble.base.bluetooth.BleOperateManager
-import android.content.IntentFilter
-import android.content.Context
-import androidx.localbroadcastmanager.content.LocalBroadcastManager
 
 import android.content.Intent
 import android.os.Build
@@ -29,28 +26,19 @@ class MainActivity : FlutterActivity() {
     companion object {
         const val CHANNEL = "com.example.picnique_ring/ble"
         const val EVENT_CHANNEL = "com.example.picnique_ring/ble_events"
+        const val HEALTH_EVENT_CHANNEL = "com.example.picnique_ring/health_events"
 
         const val FOREGROUND_CHANNEL = "com.example.picnique_ring/foreground_service_channel"
         const val BACKGROUND_CHANNEL = "com.example.picnique_ring/background_keepalive"
     }
 
     private lateinit var bridge: BleBridge
-    private var qcReceiver: QcRawReceiver? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val app: Application = this@MainActivity.application
-        // Initialize BLE SDK singleton and register receivers
         BleOperateManager.getInstance(app).init()
-        // Create bridge after SDK is ready
         bridge = BleBridge(this@MainActivity)
-        qcReceiver = QcRawReceiver(bridge)
-
-        val filter = IntentFilter().apply {
-            addAction("com.qc.characteristic_changed_qc")
-        }
-
-        LocalBroadcastManager.getInstance(this).registerReceiver(qcReceiver!!, filter)
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -168,6 +156,24 @@ class MainActivity : FlutterActivity() {
                     "syncManualPressure" -> bridge.syncManualPressure(
                         result = result
                     )
+                    "executeManualMeasurement" -> bridge.executeManualMeasurement(
+                        typeWire = call.argument<String>("type") ?: "",
+                        result = result,
+                    )
+                    "isMeasurementBusy" -> result.success(bridge.isMeasurementBusy)
+                    "resetMeasurementSession" -> {
+                        bridge.resetMeasurementSession()
+                        result.success(true)
+                    }
+                    "collectHealthIfIdle" -> {
+                        CoroutineScope(Dispatchers.IO).launch {
+                            val ok = bridge.collectHealthIfIdle(
+                                this@MainActivity,
+                                call.argument<Boolean>("force") ?: false,
+                            )
+                            withContext(Dispatchers.Main) { result.success(ok) }
+                        }
+                    }
                     "syncHrv" -> bridge.syncHrv(
                         offset = call.argument<Number>("offset")?.toByte() ?: 0,
                         result = result
@@ -182,15 +188,6 @@ class MainActivity : FlutterActivity() {
                     )
                     "syncManualTemperature" -> bridge.syncManualTemperature(
                         offset = call.argument<Int>("offset") ?: 0,
-                        result = result
-                    )
-                    "enableSimpleTouchLogging" -> bridge.enableSimpleTouchLogging(result)
-                    "getRingTouchCount" -> result.success(bridge.getTouchCount())
-                    "disableSimpleTouchLogging" -> bridge.disableSimpleTouchLogging(result)
-                    "setRingTouchMode" -> bridge.setRingTouchMode(
-                        appType = call.argument<Int>("appType") ?: 8,
-                        touchOn = call.argument<Boolean>("touchOn") ?: true,
-                        strength = call.argument<Int>("strength") ?: 1,
                         result = result
                     )
                     "enableRealtimeNotifications" -> bridge.enableRealtimeNotifications(result)
@@ -261,11 +258,13 @@ class MainActivity : FlutterActivity() {
                             try {
                                 val address = RingBackgroundPrefs.ringAddress(this@MainActivity)
                                 if (!address.isNullOrBlank()) {
-                                    if (bridge.ensureConnected(address)) {
-                                        bridge.collectAndQueue(this@MainActivity)
-                                    }
+                                    bridge.ensureConnected(address)
                                 }
-                                withContext(Dispatchers.Main) { result.success(true) }
+                                val ok = bridge.collectHealthIfIdle(
+                                    this@MainActivity,
+                                    force = true,
+                                )
+                                withContext(Dispatchers.Main) { result.success(ok) }
                             } catch (t: Throwable) {
                                 withContext(Dispatchers.Main) {
                                     result.error(
@@ -283,6 +282,17 @@ class MainActivity : FlutterActivity() {
 
         EventChannel(flutterEngine.dartExecutor.binaryMessenger, EVENT_CHANNEL)
             .setStreamHandler(bridge.eventStreamHandler)
+
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, HEALTH_EVENT_CHANNEL)
+            .setStreamHandler(object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                    bridge.setHealthEventSink { payload -> events?.success(payload) }
+                }
+
+                override fun onCancel(arguments: Any?) {
+                    bridge.setHealthEventSink(null)
+                }
+            })
     }
 
     private fun ensureIgnoreBatteryOptimizations(result: MethodChannel.Result) {
@@ -309,17 +319,6 @@ class MainActivity : FlutterActivity() {
         }
     }
     override fun onDestroy() {
-        try {
-            qcReceiver?.let {
-                LocalBroadcastManager.getInstance(this).unregisterReceiver(it)
-            }
-        } catch (_: Exception) {
-            // 필요하면 로그 남겨도 됨
-            // Log.e("MainActivity", "Failed to unregister qcReceiver", e)
-        }
-    
-        qcReceiver = null
-    
         super.onDestroy()
     }
 }
