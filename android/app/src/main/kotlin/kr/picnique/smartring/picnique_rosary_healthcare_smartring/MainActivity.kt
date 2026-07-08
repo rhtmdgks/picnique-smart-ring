@@ -12,6 +12,7 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import com.oudmon.ble.base.bluetooth.BleOperateManager
 
+import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.PowerManager
