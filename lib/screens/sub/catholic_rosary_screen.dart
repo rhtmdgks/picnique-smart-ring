@@ -5,8 +5,10 @@ import 'package:flutter/services.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/constants/colors.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/constants/fonts.dart';
 import 'package:picnique_rosary_healthcare_smartring/screens/layouts/background_layout.dart';
+import 'package:picnique_rosary_healthcare_smartring/providers/ring.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_connection_coordinator.dart';
 import 'package:picnique_rosary_healthcare_smartring/util/TouchCounter.dart';
+import 'package:provider/provider.dart';
 import 'package:picnique_rosary_healthcare_smartring/db/app_db.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/db/db_manager.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/sub_app_bar.dart';
@@ -185,9 +187,10 @@ class _CatholicRosaryScreenState extends State<CatholicRosaryScreen>
       return;
     }
 
+    if (!mounted) return;
     _sessionStart = DateTime.now();
     touchCounter.tapCount = 0;
-    await touchCounter.start();
+    await touchCounter.start(ring: context.read<Ring>());
     setState(() {
       _isRecording = true;
     });

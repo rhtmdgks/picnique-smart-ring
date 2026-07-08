@@ -20,14 +20,28 @@ part 'table.dart'; // 테이블 정의 (SleepOveralls, SleepDetails, HeartDetail
 class AppDatabase extends _$AppDatabase {
   AppDatabase() : super(_openConnection());
 
-  // 스키마 버전 ↑ (v2 → v3)
+  /// 테스트용 — in-memory 등 임의 executor 주입.
+  AppDatabase.forTesting(super.e);
+
+  // 스키마 버전 ↑ (v5 → v6: source/dedupe_key/ring_seq 컬럼)
   @override
-  int get schemaVersion => 5;
+  int get schemaVersion => 6;
+
+  /// dedupe_key partial UNIQUE 인덱스 — NULL(기존 행)은 중복 허용.
+  Future<void> _createDedupeIndexes() async {
+    for (final table in ['heart_details', 'stress_details', 'blood_oxygen_details']) {
+      await customStatement(
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_${table}_dedupe_key '
+        'ON $table(dedupe_key) WHERE dedupe_key IS NOT NULL',
+      );
+    }
+  }
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
     onCreate: (m) async {
       await m.createAll();
+      await _createDedupeIndexes();
     },
     onUpgrade: (m, from, to) async {
       // v1 → v2: HeartDetails 신설
@@ -49,6 +63,19 @@ class AppDatabase extends _$AppDatabase {
       }
       if (from < 5) {
         await m.addColumn(rosarySessions, rosarySessions.wydDedicated);
+      }
+      // v5 → v6: 측정 출처·중복키·펌웨어 시퀀스 컬럼 추가
+      if (from < 6) {
+        await m.addColumn(heartDetails, heartDetails.source);
+        await m.addColumn(heartDetails, heartDetails.dedupeKey);
+        await m.addColumn(heartDetails, heartDetails.ringSeq);
+        await m.addColumn(stressDetails, stressDetails.source);
+        await m.addColumn(stressDetails, stressDetails.dedupeKey);
+        await m.addColumn(stressDetails, stressDetails.ringSeq);
+        await m.addColumn(bloodOxygenDetails, bloodOxygenDetails.source);
+        await m.addColumn(bloodOxygenDetails, bloodOxygenDetails.dedupeKey);
+        await m.addColumn(bloodOxygenDetails, bloodOxygenDetails.ringSeq);
+        await _createDedupeIndexes();
       }
     },
     beforeOpen: (details) async {

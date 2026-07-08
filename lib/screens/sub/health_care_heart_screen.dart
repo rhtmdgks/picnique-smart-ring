@@ -21,7 +21,6 @@ import 'package:provider/provider.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/ring.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ble_command_queue.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/health_data_refresh_notifier.dart';
-import 'package:picnique_rosary_healthcare_smartring/services/health_live_metrics.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/sub_app_bar.dart';
 
 // 추가: DB와 정렬용 drift
@@ -181,15 +180,6 @@ class _HealthCareHeartScreenState extends State<HealthCareHeartScreen> {
     }
   }
 
-  Future<void> _onManualMeasureSuccess(Map<dynamic, dynamic> result) async {
-    await persistManualMeasurement(
-      dataType: DataType.HeartRate,
-      result: result,
-      metrics: context.read<HealthLiveMetrics>(),
-      refreshNotifier: context.read<HealthDataRefreshNotifier>(),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return BackgroundLayout(
@@ -238,7 +228,6 @@ class _HealthCareHeartScreenState extends State<HealthCareHeartScreen> {
                     ],
                   ),
                   isButtonExist: true,
-                  onMeasureSuccess: _onManualMeasureSuccess,
                 ),
                 const SizedBox(height: 16),
                 FutureBuilder<String>(

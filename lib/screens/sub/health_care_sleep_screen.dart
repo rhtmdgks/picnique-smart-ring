@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/ring_sleep_sync_service.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/constants/colors.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/constants/fonts.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/enum/bar.dart';
@@ -57,6 +60,8 @@ class _HealthCareSleepScreenState extends State<HealthCareSleepScreen> {
   @override
   void initState() {
     super.initState();
+    // 수면 탭 진입 시 최신 수면 데이터 pull (수동 측정 중이면 스킵).
+    unawaited(RingSleepSyncService.instance.syncDetailIfIdle());
     _sleepMessageFuture = _loadSleepMessages();
     _fetchLatest();
   }

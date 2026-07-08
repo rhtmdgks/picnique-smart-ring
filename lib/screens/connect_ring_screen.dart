@@ -91,12 +91,16 @@ class _ConnectRingSettingScreenState extends State<ConnectRingSettingScreen> {
     } else {
       await _stopScanOnly();
     }
+    if (!mounted) return;
     await _startScan();
   }
 
   // 2) 스캔 시작: 결과를 _connectList에 반영
   Future<void> _startScan() async {
     await _stopScanOnly();
+    // BLE 큐 대기 등으로 위 await 가 길어지는 동안 화면이 닫힐 수 있다 —
+    // dispose 후 setState 는 크래시 + 스캔 플로우 중단.
+    if (!mounted) return;
     setState(() {
       _isScanning = true;
       _discoveredDuringScan = 0;
@@ -127,7 +131,11 @@ class _ConnectRingSettingScreenState extends State<ConnectRingSettingScreen> {
       });
       const scanTimeout = Duration(seconds: 10);
       try {
-        await BleCommandQueue.invoke('startScan', <String, dynamic>{
+        // 스캔은 순수 CoreBluetooth 호출 — SDK 커맨드 파이프라인과 무관하므로
+        // 큐를 우회한다. 큐 경유 시 진행 중 측정(최대 45초) 뒤에 줄 서서
+        // 스캔 시작이 한참 지연된다("검색 안 됨" 체감 원인).
+        await BleCommandQueue.channel
+            .invokeMethod('startScan', <String, dynamic>{
           'namePrefix': null, // uuidString 기준으로 사용
           'timeoutMs': scanTimeout.inMilliseconds,
         });
@@ -220,7 +228,8 @@ class _ConnectRingSettingScreenState extends State<ConnectRingSettingScreen> {
   Future<void> _stopScanOnly() async {
     if (Platform.isIOS) {
       try {
-        await BleCommandQueue.invoke('stopScan');
+        // startScan 과 동일 — 순수 CoreBluetooth, 큐 우회.
+        await BleCommandQueue.channel.invokeMethod('stopScan');
       } catch (_) {}
       await _iosScanSub?.cancel();
       _iosScanSub = null;

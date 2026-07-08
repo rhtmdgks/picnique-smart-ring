@@ -38,6 +38,8 @@ import com.oudmon.ble.base.communication.req.ReadDetailSportDataReq
 import com.oudmon.ble.base.communication.req.ReadHeartRateReq
 import com.oudmon.ble.base.communication.req.SimpleKeyReq
 import com.oudmon.ble.base.communication.req.SetTimeReq
+import com.oudmon.ble.base.communication.req.TouchControlReq
+import com.oudmon.ble.base.communication.rsp.TouchControlResp
 import com.oudmon.ble.base.communication.rsp.BaseRspCmd
 import com.oudmon.ble.base.communication.rsp.BatteryRsp
 import com.oudmon.ble.base.communication.rsp.BloodOxygenSettingRsp
@@ -122,6 +124,73 @@ class BleBridge(private val appContext: Context) : RingMeasurementSessionHost {
 
     fun setHealthEventSink(sink: ((Any?) -> Unit)?) {
         healthEventSink = sink
+    }
+
+    private var touchEventSink: ((Any?) -> Unit)? = null
+
+    fun setTouchEventSink(sink: ((Any?) -> Unit)?) {
+        touchEventSink = sink
+    }
+
+    // ---- 묵주기도 링 터치 카운트 ----
+    //
+    // 터치 컨트롤을 TakePhoto 모드로 설정하면 탭할 때마다 링이
+    // 카메라 촬영 알림(CameraNotifyRsp.ACTION_TAKE_PHOTO)을 보낸다.
+    // 카메라는 열지 않고 이 알림만 탭 이벤트로 사용한다.
+    // 측정 세션(RingMeasurementSession)과 완전히 독립 — 자동 측정과 충돌 없음.
+
+    fun enableRosaryTouch(strength: Int, result: MethodChannel.Result) {
+        try {
+            BleOperateManager.getInstance().addOutCameraListener(
+                object : ICommandResponse<CameraNotifyRsp> {
+                    override fun onDataResponse(rsp: CameraNotifyRsp?) {
+                        if (rsp == null) return
+                        if (rsp.action == CameraNotifyRsp.ACTION_TAKE_PHOTO) {
+                            mainHandler.post {
+                                touchEventSink?.invoke(mapOf("type" to "ringTap"))
+                            }
+                        }
+                    }
+                }
+            )
+            CommandHandle.getInstance().executeReqCmd(
+                TouchControlReq.getWriteInstance(
+                    TOUCH_TYPE_TAKE_PHOTO,
+                    true,
+                    strength.coerceIn(1, 10),
+                ),
+                object : ICommandResponse<TouchControlResp> {
+                    override fun onDataResponse(rsp: TouchControlResp?) {
+                        result.success(mapOf("enabled" to true))
+                    }
+                }
+            )
+        } catch (t: Throwable) {
+            result.error("TOUCH_ENABLE_FAIL", t.message, null)
+        }
+    }
+
+    fun disableRosaryTouch(result: MethodChannel.Result) {
+        try {
+            BleOperateManager.getInstance().removeOutCameraListener()
+            CommandHandle.getInstance().executeReqCmd(
+                TouchControlReq.getWriteInstance(TOUCH_TYPE_OFF, true, 5),
+                object : ICommandResponse<TouchControlResp> {
+                    override fun onDataResponse(rsp: TouchControlResp?) {
+                        result.success(true)
+                    }
+                }
+            )
+        } catch (t: Throwable) {
+            result.error("TOUCH_DISABLE_FAIL", t.message, null)
+        }
+    }
+
+    companion object {
+        // QCTouchGestureControlType (iOS 헤더 기준, 펌웨어 공통):
+        // 0=Off, 1=Music, 2=Video, 3=MSLPraise, 4=EBook, 5=TakePhoto, ...
+        private const val TOUCH_TYPE_OFF = 0
+        private const val TOUCH_TYPE_TAKE_PHOTO = 5
     }
 
     // Expose as StreamHandler for EventChannel

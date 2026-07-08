@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:picnique_rosary_healthcare_smartring/db/app_db.dart';
 
 class DbManager {
@@ -9,6 +10,12 @@ class DbManager {
   /// 앱 시작 시 한 번 호출
   Future<void> open() async {
     _db ??= AppDatabase();
+  }
+
+  /// 테스트용 — in-memory DB 등으로 교체.
+  @visibleForTesting
+  void setForTesting(AppDatabase? db) {
+    _db = db;
   }
 
   /// 앱 종료 전에 닫기 (선택)

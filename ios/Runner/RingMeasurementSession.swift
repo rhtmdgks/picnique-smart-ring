@@ -197,16 +197,40 @@ final class RingMeasurementSession {
   }
 
   /// Flutter 타임아웃·취소 시 세션·SDK 훅 정리.
-  func abortManualAndReset() {
+  ///
+  /// [completion]은 측정 엔진 stop 이 실제 완료(또는 2초 타임아웃)된 뒤
+  /// main queue 에서 호출된다 — 선점 직후 수동 측정이 엔진 충돌 없이
+  /// 시작할 수 있는 시점.
+  func abortManualAndReset(completion: (() -> Void)? = nil) {
     serialQueue.async { [weak self] in
-      guard let self = self else { return }
+      guard let self = self else {
+        DispatchQueue.main.async { completion?() }
+        return
+      }
       self.state = .idle
       self.mainQueue.async {
         let manager = QCSDKManager.shareInstance()
         self.clearManualMeasuringHooks(manager)
         let types: [QCMeasuringType] = [.stress, .heartRate, .bloodOxygen, .oneKeyMeasure]
+        let group = DispatchGroup()
         for type in types {
-          manager.stopToMeasuring(withOperateType: type) { _, _ in }
+          group.enter()
+          var left = false
+          manager.stopToMeasuring(withOperateType: type) { _, _ in
+            if !left {
+              left = true
+              group.leave()
+            }
+          }
+          self.mainQueue.asyncAfter(deadline: .now() + 2) {
+            if !left {
+              left = true
+              group.leave()
+            }
+          }
+        }
+        group.notify(queue: self.mainQueue) {
+          completion?()
         }
       }
     }

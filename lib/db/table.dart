@@ -29,6 +29,17 @@ class HeartDetails extends Table {
   DateTimeColumn get date => dateTime()();
 
   IntColumn get bpm => integer().named("bpm")();
+
+  // 측정 출처 (MeasurementSource.name)
+  TextColumn get source =>
+      text().named('source').withDefault(const Constant('firmwareAuto'))();
+
+  // 중복 방지 키: '{deviceAddress}|{stream}|{epochMs}|{source}'
+  // (partial UNIQUE 인덱스 — NULL 은 중복 허용, 마이그레이션에서 생성)
+  TextColumn get dedupeKey => text().named('dedupe_key').nullable()();
+
+  // 반지 펌웨어가 부여한 시퀀스 (있을 때만)
+  TextColumn get ringSeq => text().named('ring_seq').nullable()();
 }
 
 class StressDetails extends Table {
@@ -39,6 +50,16 @@ class StressDetails extends Table {
 
   // 스트레스 값 (예: 0~100 권장, 필요시 체크 추가 가능)
   IntColumn get stress => integer().named('stress')();
+
+  // 측정 출처 (MeasurementSource.name)
+  TextColumn get source =>
+      text().named('source').withDefault(const Constant('firmwareAuto'))();
+
+  // 중복 방지 키 (partial UNIQUE 인덱스)
+  TextColumn get dedupeKey => text().named('dedupe_key').nullable()();
+
+  // 반지 펌웨어가 부여한 시퀀스 (있을 때만)
+  TextColumn get ringSeq => text().named('ring_seq').nullable()();
 }
 
 // ── 산소포화도: id / date / spo2 ─────────────────────────
@@ -49,6 +70,16 @@ class BloodOxygenDetails extends Table {
       integer().named('spo2') // 0~100 권장
       // .check(spo2.isBetweenValues(0, 100))        // 필요시 활성화
       ();
+
+  // 측정 출처 (MeasurementSource.name)
+  TextColumn get source =>
+      text().named('source').withDefault(const Constant('firmwareAuto'))();
+
+  // 중복 방지 키 (partial UNIQUE 인덱스)
+  TextColumn get dedupeKey => text().named('dedupe_key').nullable()();
+
+  // 반지 펌웨어가 부여한 시퀀스 (있을 때만)
+  TextColumn get ringSeq => text().named('ring_seq').nullable()();
 }
 
 // ── 스포츠(걸음/뛰기/거리/칼로리) 15분 단위: id / date / timeIndex / walkSteps / runSteps / distance / calorie

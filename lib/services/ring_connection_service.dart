@@ -6,7 +6,6 @@ import 'package:flutter/services.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/ring.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ble_command_queue.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/battery_notification_service.dart';
-import 'package:picnique_rosary_healthcare_smartring/services/health_data_refresh_notifier.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_connection_coordinator.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_health_accumulation.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_background_keepalive.dart';
@@ -93,6 +92,12 @@ class RingConnectionService {
       if (!sdkReady && Platform.isIOS) {
         await Future<void>.delayed(const Duration(seconds: 2));
         sdkReady = await syncTimeAfterConnect();
+      }
+      // 이미 ready 였다면 유지 — 큐 정체로 인한 syncTime 거짓 실패가
+      // 자동 측정을 죽이지 않게 한다.
+      if (!sdkReady && ring.sdkReady) {
+        debugPrint('[CONNECT] syncTime timed out but SDK already ready — keep');
+        sdkReady = true;
       }
 
       await ring.markConnected(name: deviceName, address: address);

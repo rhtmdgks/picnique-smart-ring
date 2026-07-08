@@ -17,7 +17,6 @@ import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/real_tim
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/charts/health_chart_card.dart';
 import 'package:provider/provider.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/health_data_refresh_notifier.dart';
-import 'package:picnique_rosary_healthcare_smartring/services/health_live_metrics.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/sub_app_bar.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/db/db_manager.dart';
 
@@ -156,15 +155,6 @@ class _HealthCareOxygenScreenState extends State<HealthCareOxygenScreen> {
     }
   }
 
-  Future<void> _onManualMeasureSuccess(Map<dynamic, dynamic> result) async {
-    await persistManualMeasurement(
-      dataType: DataType.Oxygen,
-      result: result,
-      metrics: context.read<HealthLiveMetrics>(),
-      refreshNotifier: context.read<HealthDataRefreshNotifier>(),
-    );
-  }
-
   Color _latestValueColor() {
     final v = int.tryParse(_latestValueText);
     if (v == null) return Colors.white;
@@ -211,7 +201,6 @@ class _HealthCareOxygenScreenState extends State<HealthCareOxygenScreen> {
                     ],
                   ),
                   isButtonExist: true,
-                  onMeasureSuccess: _onManualMeasureSuccess,
                 ),
                 const SizedBox(height: 16),
                 FutureBuilder<String>(

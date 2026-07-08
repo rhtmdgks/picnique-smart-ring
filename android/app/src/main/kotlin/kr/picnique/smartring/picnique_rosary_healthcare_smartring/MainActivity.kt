@@ -28,6 +28,7 @@ class MainActivity : FlutterActivity() {
         const val CHANNEL = "com.example.picnique_ring/ble"
         const val EVENT_CHANNEL = "com.example.picnique_ring/ble_events"
         const val HEALTH_EVENT_CHANNEL = "com.example.picnique_ring/health_events"
+        const val TOUCH_EVENT_CHANNEL = "com.example.picnique_ring/touch_events"
 
         const val FOREGROUND_CHANNEL = "com.example.picnique_ring/foreground_service_channel"
         const val BACKGROUND_CHANNEL = "com.example.picnique_ring/background_keepalive"
@@ -166,6 +167,13 @@ class MainActivity : FlutterActivity() {
                         bridge.resetMeasurementSession()
                         result.success(true)
                     }
+                    // Android는 측정 시 스케줄 pause/restore 를 하지 않아 no-op.
+                    "restorePendingSchedules" -> result.success(0)
+                    "enableRosaryTouch" -> bridge.enableRosaryTouch(
+                        call.argument<Int>("strength") ?: 5,
+                        result,
+                    )
+                    "disableRosaryTouch" -> bridge.disableRosaryTouch(result)
                     "collectHealthIfIdle" -> {
                         CoroutineScope(Dispatchers.IO).launch {
                             val ok = bridge.collectHealthIfIdle(
@@ -243,6 +251,15 @@ class MainActivity : FlutterActivity() {
                     "fetchPendingHealthRecords" -> {
                         result.success(PendingHealthQueue.readAll(this))
                     }
+                    "fetchPendingHealthSnapshot" -> {
+                        val (records, lineCount) = PendingHealthQueue.snapshot(this)
+                        result.success(
+                            mapOf(
+                                "records" to records,
+                                "fetchedLineCount" to lineCount,
+                            ),
+                        )
+                    }
                     "clearPendingHealthRecords" -> {
                         PendingHealthQueue.clear(this)
                         result.success(true)
@@ -251,7 +268,9 @@ class MainActivity : FlutterActivity() {
                         @Suppress("UNCHECKED_CAST")
                         val records = call.argument<List<Map<String, Any?>>>("records")
                             ?: emptyList()
-                        PendingHealthQueue.replaceAll(this, records)
+                        val fetched = call.argument<Int>("fetchedLineCount")
+                            ?: Int.MAX_VALUE
+                        PendingHealthQueue.replaceAll(this, records, fetched)
                         result.success(true)
                     }
                     "collectPendingHealthNow" -> {
@@ -292,6 +311,17 @@ class MainActivity : FlutterActivity() {
 
                 override fun onCancel(arguments: Any?) {
                     bridge.setHealthEventSink(null)
+                }
+            })
+
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, TOUCH_EVENT_CHANNEL)
+            .setStreamHandler(object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                    bridge.setTouchEventSink { payload -> events?.success(payload) }
+                }
+
+                override fun onCancel(arguments: Any?) {
+                    bridge.setTouchEventSink(null)
                 }
             })
     }

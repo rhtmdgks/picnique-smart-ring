@@ -7,14 +7,18 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/ring.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ble_command_queue.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/battery_notification_service.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/ring_auto_measurement_service.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_background_import_scheduler.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_background_keepalive.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_background_sync.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_connection_service.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_live_activity.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/health_data_refresh_notifier.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/health_live_metrics.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_health_accumulation.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_pending_import.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/ring_sleep_gate.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/ring_sleep_sync_service.dart';
 import 'package:picnique_rosary_healthcare_smartring/util/BLEUtil.dart';
 
 /// BLE 연결 유지·자동 재연결·충전/배터리 이벤트를 중앙에서 처리한다.
@@ -51,6 +55,7 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
     RingLiveActivity? liveActivity,
     RingSyncController? sync,
     HealthDataRefreshNotifier? healthRefresh,
+    HealthLiveMetrics? liveMetrics,
   }) async {
     _ring = ring;
     _liveActivity = liveActivity;
@@ -64,6 +69,13 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
       ring,
       refreshNotifier: healthRefresh,
     );
+    RingAutoMeasurementService.instance.bind(
+      ring,
+      refreshNotifier: healthRefresh,
+      liveMetrics: liveMetrics,
+    );
+    // 야간 수면 감지 — 기상 시 수면 sync + 야간 축적 생체 데이터 병합.
+    RingSleepGate.instance.bind(ring, onWake: _onSleepGateWake);
     if (ring.hasSavedDevice) {
       await BatteryNotificationService.ensureReadyForBackgroundAlerts();
     }
@@ -85,6 +97,8 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
     _reconnectTimer = null;
     _ring?.removeListener(_onRingProviderChanged);
     RingBackgroundImportScheduler.instance.unbind();
+    RingAutoMeasurementService.instance.unbind();
+    RingSleepGate.instance.unbind();
     WidgetsBinding.instance.removeObserver(this);
     await _eventSub?.cancel();
     _eventSub = null;
@@ -109,6 +123,10 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      // 아침 foreground 복귀 — 수면 중이었다면 기상 처리(내부에서 시간대 판정).
+      RingSleepGate.instance.onAppResumed();
+      // 마지막 수면 sync 가 오늘 아침 이전이면 요약 sync.
+      unawaited(RingSleepSyncService.instance.syncSummaryIfMorningStale());
       unawaited(_flushHealthIfConnected());
       unawaited(_tryReconnect(trigger: 'resume'));
     } else if (state == AppLifecycleState.paused ||
@@ -131,6 +149,18 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
 
   void _onRingProviderChanged() {
     RingBackgroundImportScheduler.instance.onRingStateChanged();
+    RingAutoMeasurementService.instance.onRingStateChanged();
+    RingSleepGate.instance.onRingStateChanged();
+  }
+
+  /// SleepGate 기상 감지 — 수면 sync + 야간 축적 생체 데이터 병합.
+  void _onSleepGateWake() {
+    unawaited(RingSleepSyncService.instance.syncSummary());
+    unawaited(RingHealthAccumulation.flushConnectedToApp(
+      ring: _ring,
+      refreshNotifier: _healthRefresh,
+      force: true,
+    ));
   }
 
   void _onEvent(dynamic event) {
@@ -281,8 +311,16 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
       await Future<void>.delayed(const Duration(seconds: 2));
       sdkReady = await RingConnectionService.syncTimeAfterConnect();
     }
+    // 이미 ready 였다면 유지 — syncTime 은 큐 대기 포함 15초 타임아웃이라
+    // 자동 측정이 큐를 점유 중이면 거짓 실패한다. 여기서 강등하면
+    // 자동 측정·SleepGate 가 연쇄로 죽는다(도돌이표 원인).
+    if (!sdkReady && ring.sdkReady) {
+      debugPrint('[CONNECT] syncTime timed out but SDK already ready — keep');
+      sdkReady = true;
+    }
     ring.setSdkReady(sdkReady);
     RingBackgroundImportScheduler.instance.onRingStateChanged();
+    RingAutoMeasurementService.instance.onRingStateChanged();
 
     if (!sdkReady) {
       debugPrint('[CONNECT] SDK not ready — skip post-connect setup');
@@ -325,16 +363,20 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
       await Future<void>.delayed(const Duration(seconds: 1));
     }
 
-    // 재연결·연결 직후: 반지 내부 저장분 → 앱 DB
+    // 재연결·연결 직후: 반지 내부 저장분 → 앱 DB (오프라인 축적분 강제 pull)
     await RingHealthAccumulation.flushConnectedToApp(
       ring: ring,
       refreshNotifier: _healthRefresh,
+      force: true,
     );
 
     final sync = _sync;
     if (sync != null && !Platform.isIOS) {
       unawaited(sync.run(BleCommandQueue.channel));
     }
+
+    // 연결 직후 수면 요약 sync (이벤트 기반 — backgroundSync 우선순위).
+    unawaited(RingSleepSyncService.instance.syncSummary());
   }
 
   Future<void> _readBattery(Ring ring) async {

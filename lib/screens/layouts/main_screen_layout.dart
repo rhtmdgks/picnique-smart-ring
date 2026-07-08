@@ -5,6 +5,7 @@ import 'package:picnique_rosary_healthcare_smartring/core/data/tab_item.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/ring.dart';
 import 'package:picnique_rosary_healthcare_smartring/screens/layouts/background_layout.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/health_data_refresh_notifier.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/health_live_metrics.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_background_sync.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_connection_coordinator.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_pending_import.dart';
@@ -43,6 +44,7 @@ class _MainScreenLayoutState extends State<MainScreenLayout>
       liveActivity: context.read<RingLiveActivity>(),
       sync: context.read<RingSyncController>(),
       healthRefresh: context.read<HealthDataRefreshNotifier>(),
+      liveMetrics: context.read<HealthLiveMetrics>(),
     );
   }
 

@@ -4,53 +4,51 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/enum/data_type.dart';
-import 'package:picnique_rosary_healthcare_smartring/providers/ring.dart';
+import 'package:picnique_rosary_healthcare_smartring/core/enum/measurement_source.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ble_command_queue.dart';
-import 'package:picnique_rosary_healthcare_smartring/services/health_data_refresh_notifier.dart';
-import 'package:picnique_rosary_healthcare_smartring/services/ring_pending_import.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/ring_auto_measurement_service.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/ring_measurement_store.dart';
 
-/// 수동·자동 BLE 측정의 단일 Dart 진입점.
+/// 수동 BLE 측정의 단일 Dart 진입점.
+///
+/// 수동 측정은 자동 측정보다 우선한다:
+/// 1. 진행 중인 자동 사이클을 즉시 선점(대기분 취소 + 진행분 중단)
+/// 2. 고우선순위로 측정 실행
+/// 3. 결과를 자동 측정과 같은 경로(DB·UI 알림)로 저장
+/// 4. 완료 시점부터 5분 간격으로 자동 측정 재개 — 실패해도 반드시 재개한다.
 class RingMeasurementService {
   RingMeasurementService._();
 
-  static const MethodChannel _bgChannel = MethodChannel(
-    'com.example.picnique_ring/background_keepalive',
-  );
-
-  static const EventChannel _healthEvents = EventChannel(
-    'com.example.picnique_ring/health_events',
-  );
-
-  static StreamSubscription<dynamic>? _healthSubscription;
-  static bool _healthListenerStarted = false;
-
-  static String _legacyMethod(DataType type) => switch (type) {
-        DataType.HeartRate => 'syncManualHeartRate',
-        DataType.Oxygen => 'syncManualBloodOxygen',
-        DataType.Stress => 'syncManualPressure',
-        _ => '',
-      };
+  static bool _manualBusy = false;
 
   static Future<Map<String, dynamic>> measureManual(DataType type) async {
-    final method = _legacyMethod(type);
-    if (method.isEmpty) {
+    final method = RingMeasurementStore.methodFor(type);
+    if (method == null) {
       throw PlatformException(
         code: 'MEASURE_INVALID_TYPE',
         message: 'unsupported manual measure type',
       );
     }
+    if (_manualBusy) {
+      throw PlatformException(
+        code: 'MEASURE_IN_PROGRESS',
+        message: 'manual measurement already running',
+      );
+    }
 
+    _manualBusy = true;
+    final auto = RingAutoMeasurementService.instance;
     try {
-      // iOS 수동 측정: reset 시 stopToMeasuring 이 측정 시작을 깨므로 SpO₂·심박·스트레스는 생략.
-      if (!(Platform.isIOS &&
-          (type == DataType.Oxygen ||
-              type == DataType.HeartRate ||
-              type == DataType.Stress))) {
-        await _resetNativeSession();
+      // 자동 측정 선점 — 진행 중이어도 즉시 중단시키고 수동을 먼저 실행한다.
+      await auto.pauseForManual();
+
+      // iOS: 선점 직후 stopToMeasuring 여파로 바로 측정을 시작하면 깨질 수
+      // 있어 잠시 안정화한다.
+      if (Platform.isIOS) {
+        await Future<void>.delayed(const Duration(seconds: 1));
       }
 
       final dynamic res = await BleCommandQueue.invoke<dynamic>(method);
-
       if (res is! Map) {
         debugPrint('[MEASURE] invalid response for $method: $res');
         throw PlatformException(
@@ -58,91 +56,36 @@ class RingMeasurementService {
           message: 'invalid manual measurement response',
         );
       }
+
+      final value = RingMeasurementStore.extractValue(res, type);
+      if (value != null) {
+        // 자동 측정과 동일한 저장·알림 경로 재사용 — 출처만 수동으로 구분.
+        await auto.recordMeasurement(
+          type,
+          value,
+          source: MeasurementSource.appManual,
+        );
+        debugPrint('[MEASURE] manual $type = $value saved');
+      } else {
+        debugPrint('[MEASURE] manual $method no valid value: $res');
+      }
+
       return Map<String, dynamic>.from(res);
     } on PlatformException catch (e) {
       debugPrint('[MEASURE] manual $method failed: ${e.code} ${e.message}');
-      if (e.code.contains('TIMEOUT') ||
-          e.code == 'MEASURE_SESSION_TIMEOUT' ||
-          e.code == 'MEASURE_CHANNEL_TIMEOUT') {
-        await _resetNativeSession();
+      if (e.code.contains('TIMEOUT')) {
+        // 측정 세션이 걸린 채 남지 않도록 초기화한다.
+        try {
+          await BleCommandQueue.invoke<dynamic>('resetMeasurementSession');
+        } catch (_) {}
       }
       rethrow;
+    } finally {
+      _manualBusy = false;
+      // 수동 완료(성공·실패 무관) 시점부터 5분 간격으로 자동 측정 재개.
+      auto.resumeAfterManual();
+      // 측정을 위해 pause 된 펌웨어 스케줄 복원 (큐 직렬 슬롯에서 실행).
+      unawaited(BleCommandQueue.flushPendingScheduleRestores());
     }
-  }
-  static void ensureHealthDataListener({
-    Ring? ring,
-    HealthDataRefreshNotifier? refreshNotifier,
-  }) {
-    if (_healthListenerStarted) return;
-    _healthListenerStarted = true;
-    _healthSubscription = _healthEvents.receiveBroadcastStream().listen(
-      (event) async {
-        if (event is! Map) return;
-        if (event['type'] != 'healthDataReady') return;
-        try {
-          await RingPendingImport.importAll(
-            ring: ring,
-            refreshNotifier: refreshNotifier,
-          );
-        } catch (e) {
-          debugPrint('[MEASURE] healthDataReady import failed: $e');
-        }
-      },
-      onError: (Object e) {
-        debugPrint('[MEASURE] health event error: $e');
-      },
-    );
-  }
-
-  static Future<void> disposeHealthDataListener() async {
-    await _healthSubscription?.cancel();
-    _healthSubscription = null;
-    _healthListenerStarted = false;
-  }
-
-  static Future<bool> isBusy() async {
-    try {
-      final busy = await BleCommandQueue.invoke<bool>('isMeasurementBusy');
-      return busy ?? false;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  static Future<void> _resetNativeSession() async {
-    try {
-      await BleCommandQueue.invoke<bool>('resetMeasurementSession');
-    } catch (e) {
-      debugPrint('[MEASURE] resetMeasurementSession failed: $e');
-    }
-  }
-
-  /// 반지 저장소 pull → pending → DB.
-  static Future<int> collectAndImport({
-    bool force = false,
-    Ring? ring,
-    HealthDataRefreshNotifier? refreshNotifier,
-  }) async {
-    if (ring != null && !ring.isConnected) {
-      debugPrint('[MEASURE] skip collect — not connected');
-      return 0;
-    }
-
-    try {
-      await BleCommandQueue.invoke<bool>(
-        'collectHealthIfIdle',
-        {'force': force},
-      );
-    } catch (e) {
-      debugPrint('[MEASURE] collectHealthIfIdle failed: $e');
-      try {
-        await _bgChannel.invokeMethod<void>('collectPendingHealthNow');
-      } catch (_) {}
-    }
-
-    return RingPendingImport.importAll(
-      ring: ring,
-      refreshNotifier: refreshNotifier,
-    );
   }
 }

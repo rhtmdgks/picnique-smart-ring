@@ -2,7 +2,6 @@
 
 import 'dart:async';
 import 'dart:math' as math;
-import 'dart:math' show min;
 
 import 'package:drift/drift.dart';
 import 'package:drift/drift.dart' as drift;
@@ -14,13 +13,10 @@ import 'package:picnique_rosary_healthcare_smartring/providers/ring.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:url_launcher/url_launcher.dart'; // pubspec에 추가 필요
-import 'package:picnique_rosary_healthcare_smartring/core/enum/data_type.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/db/db_manager.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/constants/ring_measurement_policy.dart';
-import 'package:picnique_rosary_healthcare_smartring/core/enum/data_type.dart';
-import 'package:picnique_rosary_healthcare_smartring/services/health_data_refresh_notifier.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ble_command_queue.dart';
-import 'package:picnique_rosary_healthcare_smartring/services/health_live_metrics.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/ring_monitoring_status.dart';
 
 import '../db/app_db.dart';
 
@@ -182,38 +178,66 @@ Future<bool> isBluetoothReady({
 /// 연결 직후 자동 모니터링 설정 간격(iOS BLE 안정화).
 const Duration _monitoringWriteGap = Duration(milliseconds: 600);
 
-Future<void> _writeMonitoringWithRetry(
+Future<bool> _writeMonitoringWithRetry(
   String method,
   Map<String, dynamic> args, {
-  int attempts = 3,
+  int attempts = 2,
 }) async {
   for (var i = 0; i < attempts; i++) {
     if (i > 0) {
       await Future<void>.delayed(_monitoringWriteGap);
     }
+    // 수동 측정 중 설정 write 는 링이 거부(HR_WRITE_FAIL 등) —
+    // 매 시도마다 수동 세션이 끝날 때까지 기다린다.
+    await BleCommandQueue.waitUntilManualIdle();
     try {
-      await _bleInvoke(method, args);
+      // uiFresh: 수동·자동 측정보다 뒤에 서고(측정 지연 방지),
+      // 선점 취소 대상도 아니다. connection 이면 측정 앞에 끼어든다.
+      await BleCommandQueue.invoke(method, args, BleOpPriority.uiFresh);
       debugPrint('[MONITOR] $method ok');
-      return;
+      return true;
     } catch (e) {
       debugPrint('[MONITOR] $method attempt ${i + 1}/$attempts failed: $e');
     }
   }
+  return false;
 }
 
-/// 반지 자동 측정(심박·산소·HRV·스트레스)을 켠다.
+/// 스케줄 설정 read-back — `{isEnable: bool}` 응답에서 ON 여부 확인.
+/// 읽기 실패는 미확인이므로 write 결과를 그대로 신뢰한다(낙관).
+Future<bool> _readMonitoringEnabled(String method, bool writeOk) async {
+  try {
+    final res = await _bleInvoke<dynamic>(method);
+    if (res is Map && res['isEnable'] is bool) {
+      final enabled = res['isEnable'] as bool;
+      debugPrint('[MONITOR] $method → isEnable=$enabled');
+      return enabled;
+    }
+    return writeOk;
+  } catch (e) {
+    debugPrint('[MONITOR] $method read failed: $e');
+    return writeOk;
+  }
+}
+
+/// 반지 펌웨어 자동 측정(심박·산소·HRV·스트레스)을 켜고 검증한다.
+///
+/// 펌웨어 스케줄은 **연결 끊김 대비 백업 축적** 담당 — 연결 중 5분 주기
+/// 측정은 RingAutoMeasurementService(앱 주도)가 담당한다. 반환한
+/// [RingMonitoringStatus] 는 write + read-back 검증 결과로, 깨진
+/// 스트림은 오프라인 축적이 안 될 수 있으니 로그로 추적한다.
 ///
 /// QC 링은 **HRV 스케줄 ON → 스트레스 산출** 파이프라인이다.
 /// HRV 없이 writePressureSetting만 하면 set/get fail -1 이 자주 난다.
 /// picnique_ring 참고: HR → SpO₂ → Pressure → **HRV** 순서.
-Future<void> enableRingAutoMonitoring({
+Future<RingMonitoringStatus> enableRingAutoMonitoring({
   MethodChannel platform = _blePlatformChannel,
 }) async {
   await BleCommandQueue.waitUntilManualIdle();
 
   const hrInterval = RingMeasurementPolicy.ringAutoHeartIntervalMinutes;
 
-  await _writeMonitoringWithRetry('writeHrSetting', {
+  final hrOk = await _writeMonitoringWithRetry('writeHrSetting', {
     'isEnable': true,
     'interval': hrInterval,
   });
@@ -221,23 +245,34 @@ Future<void> enableRingAutoMonitoring({
     await Future<void>.delayed(_monitoringWriteGap);
   }
 
-  await _writeMonitoringWithRetry('writeSpo2Setting', {
+  final spo2Ok = await _writeMonitoringWithRetry('writeSpo2Setting', {
     'isEnable': true,
   });
   if (Platform.isIOS) {
     await Future<void>.delayed(_monitoringWriteGap);
   }
 
-  await _writeMonitoringWithRetry('writePressureSetting', {
+  final stressOk = await _writeMonitoringWithRetry('writePressureSetting', {
     'isEnable': true,
   });
   if (Platform.isIOS) {
     await Future<void>.delayed(_monitoringWriteGap);
   }
 
-  await _writeMonitoringWithRetry('writeHrvSetting', {
+  final hrvOk = await _writeMonitoringWithRetry('writeHrvSetting', {
     'isEnable': true,
   });
+
+  // write 성공분은 read-back 으로 재검증, 실패분은 그대로 broken.
+  final status = RingMonitoringStatus(
+    hr: hrOk && await _readMonitoringEnabled('readHrSetting', hrOk),
+    spo2: spo2Ok && await _readMonitoringEnabled('readSpo2Setting', spo2Ok),
+    stress:
+        stressOk && await _readMonitoringEnabled('readPressureSetting', stressOk),
+    hrv: hrvOk && await _readMonitoringEnabled('readHrvSetting', hrvOk),
+  );
+  debugPrint('[MONITOR] schedule status: $status');
+  return status;
 }
 
 /// 한 번에: 현재 설정 읽어서 print → 전부 ON 시도 → 결과 재확인 print
@@ -905,73 +940,13 @@ Future<void> syncRecent3DaysHeartToDb(
   MethodChannel platform, {
   bool includeZeros = false,
 }) async {
-  final heartDb = DbManager.I.heartDB;
-
-  for (int offset = 0; offset < 3; offset++) {
-    final now = DateTime.now();
-    final dayStart = DateTime(
-      now.year,
-      now.month,
-      now.day,
-    ).subtract(Duration(days: offset)); // 로컬 자정
-    final dayEnd = dayStart.add(const Duration(days: 1));
-    final mustRefresh = (offset >= 0); // 오늘은 무조건 갱신
-
-    // 존재 여부 확인(어제/그저께만). 효율 위해 limit(1).
-    if (!mustRefresh) {
-      final exists =
-          await (heartDb.select(heartDb.heartDetails)
-                ..where((t) => t.date.isBetweenValues(dayStart, dayEnd))
-                ..limit(1))
-              .get();
-      if (exists.isNotEmpty) {
-        // 이미 있으면 스킵
-        continue;
-      }
-    }
-
-    // 기기에서 대상 날짜의 5분 간격 HR 배열(최대 288개) 요청
-    final hrArr = await _fetchHeartArrayForDate(platform, dayStart);
-    if (hrArr == null || hrArr.isEmpty) continue;
-
-    final rows = <Insertable<HeartDetail>>[];
-    final count = hrArr.length < 288 ? hrArr.length : 288;
-    for (int i = 0; i < count; i++) {
-      final bpm = hrArr[i];
-      if (!includeZeros && bpm == 0) continue;
-
-      final sampleTime = dayStart.add(
-        Duration(minutes: RingMeasurementPolicy.ringAutoHeartIntervalMinutes * i),
-      );
-
-      rows.add(HeartDetailsCompanion.insert(date: sampleTime, bpm: bpm));
-    }
-
-    // 2) 삭제 + 삽입을 하나의 batch로 묶어서 같은 트랜잭션 안에 실행
-    // (2) 트랜잭션: 삭제 먼저(배치 아님)
-    await heartDb.transaction(() async {
-      await (heartDb.delete(
-        heartDb.heartDetails,
-      )..where((t) => t.date.isBetweenValues(dayStart, dayEnd))).go();
-
-      // (3) 삽입: 배치 대신 작은 덩어리로 나눠 순차 삽입
-      const chunk = 64;
-      final total = rows.length;
-
-      for (var i = 0; i < total; i += chunk) {
-        final slice = rows.sublist(i, min(i + chunk, total));
-        // 배치 대신 개별 insert (드리프트가 내부에서 단건 INSERT 쿼리를 직렬로 수행)
-        for (final r in slice) {
-          await heartDb.into(heartDb.heartDetails).insert(r);
-        }
-      }
-    });
-  }
+  return;
 }
 
 /// 특정 날짜(로컬 자정 기준)의 5분 간격 심박 배열을 기기에서 가져옵니다.
 /// 성공 시 길이<=288의 int 리스트, 실패/없음이면 null.
 /// (기기 SDK 특성상 기준 시간을 "그 날 정오"로 넣는 게 안정적인 경우가 많음)
+// ignore: unused_element
 Future<List<int>?> _fetchHeartArrayForDate(
   MethodChannel platform,
   DateTime dayStartLocal,
@@ -1061,199 +1036,20 @@ Future<Map<String, int>?> fetchTodaySportFromRing(
   }
 }
 
-Future<void> saveManualStressReading(int stress) async {
-  if (stress <= 0) return;
-  final db = DbManager.I.heartDB;
-  await db.into(db.stressDetails).insert(
-    StressDetailsCompanion.insert(date: DateTime.now(), stress: stress),
-  );
-}
-
-int _asMeasurementInt(dynamic value) {
-  if (value is num) return value.toInt();
-  return int.tryParse(value?.toString() ?? '') ?? 0;
-}
-
-/// 수동 측정 결과를 DB에 저장하고 표시할 숫자값을 반환한다.
-Future<int?> persistManualMeasurement({
-  required DataType dataType,
-  required Map<dynamic, dynamic> result,
-  HealthLiveMetrics? metrics,
-  HealthDataRefreshNotifier? refreshNotifier,
-}) async {
-  final now = DateTime.now();
-  final db = DbManager.I.heartDB;
-
-  int? saved;
-  switch (dataType) {
-    case DataType.HeartRate:
-      final hr = _asMeasurementInt(result['hr'] ?? result['value']);
-      if (hr <= 0) return null;
-      await db.insertHeartDetail(
-        HeartDetailsCompanion.insert(date: now, bpm: hr),
-      );
-      saved = hr;
-    case DataType.Oxygen:
-      final spo2 = _asMeasurementInt(result['spo2'] ?? result['value']);
-      if (spo2 <= 0) return null;
-      await db.insertSpO2(
-        BloodOxygenDetailsCompanion.insert(date: now, spo2: spo2),
-      );
-      saved = spo2;
-    case DataType.Stress:
-      final stress = _asMeasurementInt(result['pressure'] ?? result['value']);
-      if (stress <= 0) return null;
-      await saveManualStressReading(stress);
-      saved = stress;
-    default:
-      return null;
-  }
-
-  metrics?.record(dataType, saved);
-  if (saved != null) {
-    refreshNotifier?.notifyChanged(dataType);
-  }
-  return saved;
-}
+// 수동 측정 저장은 RingMeasurementService → RingMeasurementStore 단일 경로.
+// (과거 persistManualMeasurement 는 화면별 이중 저장을 유발해 제거)
 
 Future<void> syncRecent7DaysStressToDb(
   MethodChannel platform, {
   bool includeZeros = false,
 }) async {
-  final db = DbManager.I.heartDB;
-
-  DateTime startOfDay(DateTime d) => DateTime(d.year, d.month, d.day);
-
-  int asInt(dynamic v, {int def = 0}) {
-    if (v == null) return def;
-    if (v is int) return v;
-    if (v is num) return v.toInt();
-    if (v is String) return int.tryParse(v) ?? def;
-    return def;
-  }
-
-  for (int offset = 0; offset <= 6; offset++) {
-    // 1) 네이티브 호출
-    Map<dynamic, dynamic>? resp;
-    try {
-      resp = await _bleInvoke<Map<dynamic, dynamic>>(
-        'syncPressure',
-        {'offset': offset},
-      );
-    } catch (e) {
-      debugPrint("[STRESS_SYNC] invoke error(offset=$offset): $e");
-      continue;
-    }
-    if (resp == null) continue;
-
-    // 2) 기준 날짜 계산 (today가 있으면 그 날짜 기준에서 offset만큼 전날로)
-    final todayMap = resp['today'] as Map<dynamic, dynamic>?;
-    DateTime baseToday = startOfDay(DateTime.now());
-    if (todayMap != null) {
-      final y = asInt(todayMap['year']);
-      final m = asInt(todayMap['month']);
-      final d = asInt(todayMap['day']);
-      if (y > 0 && m > 0 && d > 0) baseToday = DateTime(y, m, d);
-    }
-    final dayStart = baseToday.subtract(Duration(days: offset));
-    final dayEnd = dayStart.add(const Duration(days: 1));
-
-    // 오늘만 무조건 갱신, 나머지는 있으면 스킵
-    final mustRefresh = (offset >= 0);
-    if (!mustRefresh) {
-      final exists =
-          await (db.select(db.stressDetails)
-                ..where((t) => t.date.isBetweenValues(dayStart, dayEnd))
-                ..limit(1))
-              .get();
-      if (exists.isNotEmpty) continue;
-    }
-
-    // 3) range(분) 간격으로 array 시퀀스 해석
-    final rangeMinRaw = asInt(resp['range'], def: 30);
-    final rangeMin = (rangeMinRaw <= 0 || rangeMinRaw > 1440)
-        ? 30
-        : rangeMinRaw;
-
-    final List<dynamic> arrDyn = (resp['array'] as List<dynamic>?) ?? const [];
-    if (arrDyn.isEmpty) continue;
-
-    final rows = <Insertable<StressDetail>>[];
-    for (int i = 0; i < arrDyn.length; i++) {
-      final val = asInt(arrDyn[i]);
-      if (!includeZeros && val <= 0) continue;
-
-      final t = dayStart.add(Duration(minutes: i * rangeMin));
-      if (!t.isBefore(dayEnd)) break; // 일자 경계 넘으면 중단
-
-      rows.add(StressDetailsCompanion.insert(date: t, stress: val));
-    }
-    if (rows.isEmpty) continue;
-
-    // 4) 트랜잭션: 해당 일자 삭제 후 삽입
-    await db.transaction(() async {
-      await (db.delete(
-        db.stressDetails,
-      )..where((t) => t.date.isBetweenValues(dayStart, dayEnd))).go();
-
-      // 건수 많지 않으므로 단건 삽입으로도 충분
-      for (final r in rows) {
-        await db.into(db.stressDetails).insert(r);
-      }
-    });
-  }
+  return;
 }
 
 Future<void> syncRecent3DaysSportDetailsToDb(
   MethodChannel platform,
 ) async {
-  final db = DbManager.I.heartDB;
-
-  DateTime day0(DateTime d) => DateTime(d.year, d.month, d.day);
-
-  for (int offset = 0; offset < 3; offset++) {
-    final now = DateTime.now();
-    final dayStart = day0(now).subtract(Duration(days: offset));
-    final dayEnd = dayStart.add(const Duration(days: 1));
-
-    // 오늘만 항상 갱신, 나머지는 있으면 스킵
-    final mustRefresh = offset == 0;
-
-    // before: 현재 DB 상태 요약
-    final beforeRows =
-        await (db.select(db.sportDetails)..where(
-              (t) =>
-                  t.date.isBiggerOrEqual(drift.Variable(dayStart)) &
-                  t.date.isSmallerThan(drift.Variable(dayEnd)),
-            ))
-            .get();
-
-    if (!mustRefresh && beforeRows.isNotEmpty) {
-      continue;
-    }
-
-    // 네이티브 호출
-    Map<dynamic, dynamic>? resp;
-    try {
-      resp = await _bleInvoke<Map<dynamic, dynamic>>(
-        'syncSportDetail',
-        {'dayOffset': offset},
-      );
-    } catch (e) {
-      debugPrint("[SPORT_SYNC] invoke error(offset=$offset): $e");
-      continue;
-    }
-
-    final raw = (resp?['details'] as List<dynamic>?) ?? const [];
-    if (raw.isEmpty) continue;
-
-    // 하루치 전체 삭제 후 삽입 (프로젝트의 saveSportDetailsFromNative 규약)
-    final details = raw
-        .cast<Map>()
-        .map((m) => m.map((k, v) => MapEntry(k.toString(), v)))
-        .toList();
-    await db.saveSportDetailsFromNative(details.cast<Map<String, dynamic>>());
-  }
+  return;
 }
 
 Future<void> syncRecent3DaysOxygenToDb(
@@ -1261,160 +1057,18 @@ Future<void> syncRecent3DaysOxygenToDb(
   MethodChannel platform, {
   bool includeZeros = false,
 }) async {
-  // iOS QCBandSDK: getBloodOxygenData 응답 파싱 중 프로세스 크래시 가능
-  if (Platform.isIOS) {
-    debugPrint("[OXY_SYNC] skipped on iOS (SDK stability)");
-    return;
-  }
-
-  final db = DbManager.I.heartDB;
-  final startedAt = DateTime.now();
-  debugPrint("[OXY_SYNC] start includeZeros=$includeZeros");
-
-  // ---- helpers ----
-  DateTime startOfDay(DateTime d) => DateTime(d.year, d.month, d.day);
-  DateTime? dayStartFromDateStr(String? s) {
-    if (s == null || s.isEmpty) return null;
-    try {
-      final norm = s.contains(' ') && !s.contains('T')
-          ? s.replaceFirst(' ', 'T')
-          : s;
-      final dt = DateTime.parse(norm);
-      return startOfDay(dt);
-    } catch (_) {
-      return null;
-    }
-  }
-
-  DateTime? dayStartFromUnix(dynamic v) {
-    if (v is! num) return null;
-    final n = v.toInt();
-    final ms = n > 1000000000000 ? n : n * 1000; // sec or ms 추정
-    final dt = DateTime.fromMillisecondsSinceEpoch(ms, isUtc: true);
-    return startOfDay(dt);
-  }
-
-  int asInt(dynamic v, {int def = 0}) {
-    if (v == null) return def;
-    if (v is int) return v;
-    if (v is num) return v.toInt();
-    if (v is String) return int.tryParse(v) ?? def;
-    return def;
-  }
-
-  List<int> asIntList(dynamic any) {
-    if (any is List) return any.map((e) => asInt(e, def: 0)).toList();
-    return const <int>[];
-  }
-
-  // ---- 1) 네이티브에서 전체 SpO2 리스트 수신 ----
-  final List<dynamic> raw;
-  try {
-    // Kotlin: once.success(out)  // out: List<Map<String, Any?>>
-    final t0 = DateTime.now();
-    final resp = await _bleInvoke<List<dynamic>>('syncBloodOxygen')
-        .timeout(const Duration(seconds: 20));
-    debugPrint(
-      "[OXY_SYNC] native returned count=${resp?.length ?? 0} in ${DateTime.now().difference(t0).inMilliseconds}ms",
-    );
-    raw = resp ?? const [];
-  } on TimeoutException {
-    debugPrint("[OXY_SYNC] native call timeout");
-    return;
-  } catch (e) {
-    debugPrint("[OXY_SYNC] invoke error: $e");
-    return; // 네이티브 미구현/에러 시 종료
-  }
-  if (raw.isEmpty) return;
-
-  // ---- 2) 파싱 → 일자별(hourly) 레코드 축적 ----
-  // dayStart(자정) -> 그 날짜에 삽입할 Companion 리스트
-  final Map<DateTime, List<BloodOxygenDetailsCompanion>> rowsByDay = {};
-
-  for (final item in raw) {
-    if (item is! Map) continue;
-
-    final dateStr = item['dateStr'] as String?;
-    final unix = item['unix_time'];
-    final dayStart = dayStartFromDateStr(dateStr) ?? dayStartFromUnix(unix);
-    if (dayStart == null) continue;
-
-    final minArray = asIntList(item['minArray']);
-    final maxArray = asIntList(item['maxArray']);
-
-    // “정시 1시간 간격”으로 해석 → 인덱스 i = 시(hour)
-    // 일반적으로 24개일 것이므로 0..23까지만 쓴다.
-    final len = math.min(math.max(minArray.length, maxArray.length), 24);
-    if (len == 0) continue;
-
-    final dayRows = rowsByDay.putIfAbsent(
-      dayStart,
-      () => <BloodOxygenDetailsCompanion>[],
-    );
-
-    for (int i = 0; i < len; i++) {
-      final minV = i < minArray.length ? minArray[i] : 0;
-      final maxV = i < maxArray.length ? maxArray[i] : 0;
-
-      int v;
-      if (minV > 0 && maxV > 0) {
-        v = ((minV + maxV) / 2).round();
-      } else {
-        v = maxV > 0 ? maxV : minV;
-      }
-      if (!includeZeros && v <= 0) continue;
-
-      final t = dayStart.add(Duration(hours: i)); // 정시(시간) 타임스탬프
-      dayRows.add(BloodOxygenDetailsCompanion.insert(date: t, spo2: v));
-    }
-  }
-
-  debugPrint(
-    "[OXY_SYNC] parsed days=${rowsByDay.length} totalRows=${rowsByDay.values.fold<int>(0, (acc, e) => acc + e.length)}",
-  );
-
-  if (rowsByDay.isEmpty) return;
-
-  // ---- 3) 트랜잭션: 날짜별로 삭제 후 삽입(덮어쓰기) ----
-  final t1 = DateTime.now();
-  await db.transaction(() async {
-    for (final entry in rowsByDay.entries) {
-      final dayStart = entry.key;
-      final dayEnd = dayStart.add(const Duration(days: 1));
-      final rows = entry.value;
-
-      // 해당 일자 범위 기존 값 삭제
-      await (db.delete(
-        db.bloodOxygenDetails,
-      )..where((t) => t.date.isBetweenValues(dayStart, dayEnd))).go();
-
-      // 삽입 (chunk)
-      const chunk = 128;
-      for (int i = 0; i < rows.length; i += chunk) {
-        final slice = rows.sublist(i, math.min(i + chunk, rows.length));
-        for (final r in slice) {
-          await db.into(db.bloodOxygenDetails).insert(r);
-        }
-      }
-    }
-  });
-  debugPrint(
-    "[OXY_SYNC] db write done in ${DateTime.now().difference(t1).inMilliseconds}ms (total ${DateTime.now().difference(startedAt).inMilliseconds}ms)",
-  );
+  return;
 }
 
 Future<void> syncSleepDetailsLast3Days({
   required MethodChannel platform,
 }) async {
-  await _upsertSleepDetailsForOffsets(
-    db: DbManager.I.sleepDB,
-    platform: platform,
-    offsets: const [0, 1, 2],
-  );
+  return;
 }
 
 /// 내부 공용: 주어진 offsets(예: [0,1,2])에 대해 SleepDetails를 갱신
 /// 내부 공용: 주어진 offsets(예: [0,1,2])에 대해 SleepDetails를 갱신 + 중간 로그 출력
+// ignore: unused_element
 Future<void> _upsertSleepDetailsForOffsets({
   required AppDatabase db,
   required MethodChannel platform,
@@ -1785,13 +1439,5 @@ class BleRepository {
 // }
 
 Future<void> syncAllRecentData(MethodChannel platform) async {
-  try {
-    await syncRecent3DaysHeartToDb(platform);
-    await syncRecent3DaysOxygenToDb(platform);
-    await syncRecent3DaysSportDetailsToDb(platform);
-    await syncRecent7DaysStressToDb(platform);
-    await syncSleepDetailsLast3Days(platform: platform);
-  } catch (e, s) {
-    debugPrint('syncAllRecentData error: $e\n$s');
-  }
+  return;
 }

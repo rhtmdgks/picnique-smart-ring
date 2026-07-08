@@ -16,7 +16,6 @@ import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/charts/h
 import 'package:picnique_rosary_healthcare_smartring/widgets/healthcare/stress_hrv_messages.dart';
 import 'package:provider/provider.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/health_data_refresh_notifier.dart';
-import 'package:picnique_rosary_healthcare_smartring/services/health_live_metrics.dart';
 import 'package:picnique_rosary_healthcare_smartring/widgets/sub_app_bar.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/ring.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ble_command_queue.dart';
@@ -150,15 +149,6 @@ class _HealthCareStressScreenState extends State<HealthCareStressScreen> {
     }
   }
 
-  Future<void> _onManualMeasureSuccess(Map<dynamic, dynamic> result) async {
-    await persistManualMeasurement(
-      dataType: DataType.Stress,
-      result: result,
-      metrics: context.read<HealthLiveMetrics>(),
-      refreshNotifier: context.read<HealthDataRefreshNotifier>(),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return BackgroundLayout(
@@ -197,7 +187,6 @@ class _HealthCareStressScreenState extends State<HealthCareStressScreen> {
                     ],
                   ),
                   isButtonExist: true,
-                  onMeasureSuccess: _onManualMeasureSuccess,
                 ),
                 const SizedBox(height: 16),
                 StressHrvMessages(future: _healthMessageFuture),

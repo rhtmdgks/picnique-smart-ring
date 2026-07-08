@@ -9,6 +9,8 @@ import UserNotifications
 
 enum IosPendingHealthQueue {
   private static let fileName = "ring_pending_health.jsonl"
+  /// append(BLE 콜백 스레드)와 fetch/replace(main)가 겹치므로 파일 접근 직렬화.
+  private static let lock = NSLock()
 
   private static var fileURL: URL {
     let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
@@ -18,6 +20,8 @@ enum IosPendingHealthQueue {
   static func append(_ record: [String: Any]) {
     guard let data = try? JSONSerialization.data(withJSONObject: record),
           let line = String(data: data, encoding: .utf8) else { return }
+    lock.lock()
+    defer { lock.unlock() }
     let url = fileURL
     if FileManager.default.fileExists(atPath: url.path),
        let handle = try? FileHandle(forWritingTo: url) {
@@ -31,11 +35,14 @@ enum IosPendingHealthQueue {
     }
   }
 
-  static func readAll() -> [[String: Any]] {
-    let url = fileURL
-    guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+  private static func rawLines() -> [String] {
+    guard let text = try? String(contentsOf: fileURL, encoding: .utf8) else { return [] }
+    return text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+  }
+
+  private static func parse(_ lines: [String]) -> [[String: Any]] {
     var rows: [[String: Any]] = []
-    for line in text.split(separator: "\n") {
+    for line in lines {
       guard let data = line.data(using: .utf8),
             let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
         continue
@@ -45,21 +52,49 @@ enum IosPendingHealthQueue {
     return rows
   }
 
+  /// 큐 스냅샷 — 레코드 목록 + 원본 라인 수(ACK 시 tail 보존 기준).
+  static func snapshot() -> (records: [[String: Any]], lineCount: Int) {
+    lock.lock()
+    defer { lock.unlock() }
+    let lines = rawLines()
+    return (parse(lines), lines.count)
+  }
+
+  static func readAll() -> [[String: Any]] {
+    lock.lock()
+    defer { lock.unlock() }
+    return parse(rawLines())
+  }
+
   static func clear() {
+    lock.lock()
+    defer { lock.unlock() }
     try? FileManager.default.removeItem(at: fileURL)
   }
 
-  static func replaceAll(_ records: [[String: Any]]) {
-    if records.isEmpty {
-      clear()
-      return
-    }
-    var text = ""
+  /// ACK — 스냅샷 처리분을 remaining 으로 교체하되, fetch 이후 append 된
+  /// tail(라인 `fetchedLineCount` 이후)은 보존한다. 유실 방지.
+  static func replaceAll(_ records: [[String: Any]], fetchedLineCount: Int) {
+    lock.lock()
+    defer { lock.unlock() }
+    let current = rawLines()
+    let tail = fetchedLineCount < current.count
+      ? Array(current[fetchedLineCount...])
+      : []
+
+    var lines: [String] = []
     for record in records {
       guard let data = try? JSONSerialization.data(withJSONObject: record),
             let line = String(data: data, encoding: .utf8) else { continue }
-      text += line + "\n"
+      lines.append(line)
     }
+    lines.append(contentsOf: tail)
+
+    if lines.isEmpty {
+      try? FileManager.default.removeItem(at: fileURL)
+      return
+    }
+    let text = lines.joined(separator: "\n") + "\n"
     try? text.write(to: fileURL, atomically: true, encoding: .utf8)
   }
 }
@@ -170,6 +205,24 @@ private final class HealthEventStreamHandler: NSObject, FlutterStreamHandler {
   }
 }
 
+private final class TouchEventStreamHandler: NSObject, FlutterStreamHandler {
+  weak var bridge: IosBleBridge?
+
+  init(bridge: IosBleBridge) {
+    self.bridge = bridge
+  }
+
+  func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
+    bridge?.setTouchEventSink(events)
+    return nil
+  }
+
+  func onCancel(withArguments arguments: Any?) -> FlutterError? {
+    bridge?.setTouchEventSink(nil)
+    return nil
+  }
+}
+
 final class IosBleBridge: NSObject {
   static let bgTaskId = "kr.picnique.smartring.ring-sync"
   private static let centralRestoreId = "kr.picnique.smartring.central"
@@ -186,10 +239,12 @@ final class IosBleBridge: NSObject {
     "com.example.picnique_ring/charging_live_activity"
 
   private let healthEventChannelName = "com.example.picnique_ring/health_events"
+  private let touchEventChannelName = "com.example.picnique_ring/touch_events"
 
   private var methodChannel: FlutterMethodChannel!
   private var eventChannel: FlutterEventChannel!
   private var healthEventChannel: FlutterEventChannel!
+  private var touchEventChannel: FlutterEventChannel!
   private var fgChannel: FlutterMethodChannel!
   private var bgChannel: FlutterMethodChannel!
   private var chargingLiveActivityChannel: FlutterMethodChannel!
@@ -222,11 +277,129 @@ final class IosBleBridge: NSObject {
   private var keepaliveConnectCompletion: ((Bool) -> Void)?
   private var backgroundCollectTimer: Timer?
   private var backgroundCollectInFlight = false
+  /// resetMeasurementSession(선점)마다 증가 — 지연 시작된 측정이 선점 이후에
+  /// startToMeasuring 을 실행해 고아 세션을 만드는 것을 막는다.
+  private var manualAbortEpoch = 0
+
+  /// 진행 중 측정 핸들러의 즉시 종료 콜백 (main thread 전용).
+  /// epoch 가드는 시작 전 지연 창만 커버 — 이미 시작된 측정은 여기로 죽인다.
+  private var activeMeasurementAborts: [Int: () -> Void] = [:]
+  private var nextMeasurementAbortToken = 0
+
+  private func registerMeasurementAbort(_ abort: @escaping () -> Void) -> Int {
+    nextMeasurementAbortToken += 1
+    let token = nextMeasurementAbortToken
+    activeMeasurementAborts[token] = abort
+    return token
+  }
+
+  private func unregisterMeasurementAbort(_ token: Int) {
+    activeMeasurementAborts.removeValue(forKey: token)
+  }
+
+  private func fireMeasurementAborts() {
+    let aborts = Array(activeMeasurementAborts.values)
+    activeMeasurementAborts.removeAll()
+    for abort in aborts { abort() }
+  }
+
+  /// pause 후 아직 복원 못 한 펌웨어 스케줄 (stream → HR interval, 0 = on/off형).
+  ///
+  /// 복원 write 를 네이티브가 즉시 쏘면 Dart 큐가 실행 중인 다른 BLE 명령과
+  /// 인터리브되어 거부된다("restore failed" 재발 원인). 그래서 여기 등록만
+  /// 하고, 실제 write 는 Dart 큐가 직렬 슬롯에서 `restorePendingSchedules`
+  /// 를 호출할 때 수행한다 — 경쟁 원천 차단 + 실패 시 다음 호출에서 재시도.
+  private var pendingScheduleRestores: [String: Int] = [:]
+
+  /// 마지막으로 확인·설정한 펌웨어 스케줄 ON/OFF (stream → enabled).
+  ///
+  /// 스케줄 상태는 앱이 write 할 때만 바뀌므로 캐시가 유효하다. 매 측정마다
+  /// `getSchedual*` read(실패 시 수 초 타임아웃)를 반복하지 않기 위한 것 —
+  /// 측정 시작 지연의 주범이었다. 연결이 새로 맺어지면 초기화.
+  private var scheduleStateCache: [String: Bool] = [:]
+
+  private func markSchedulePendingRestore(_ stream: String, interval: Int = 0) {
+    pendingScheduleRestores[stream] = interval
+    scheduleStateCache[stream] = false
+  }
+
+  private func restorePendingSchedules(result: @escaping FlutterResult) {
+    if pendingScheduleRestores.isEmpty {
+      result(0)
+      return
+    }
+    // 측정 진행 중이면 시도 자체를 미룬다 — 호출측이 다음 기회에 재호출.
+    guard activeMeasurementAborts.isEmpty && !RingMeasurementSession.shared.isBusy else {
+      result(pendingScheduleRestores.count)
+      return
+    }
+    // 직전 측정의 stopToMeasuring(fire-and-forget)이 링에서 마무리될
+    // 시간을 준다 — 엔진 정지 전 write 는 거부되기 쉽다.
+    let epoch = manualAbortEpoch
+    mainQueue.asyncAfter(deadline: .now() + 1.2) {
+      self.restoreNextPendingSchedule(epoch: epoch) {
+        result(self.pendingScheduleRestores.count)
+      }
+    }
+  }
+
+  /// SDK 싱글톤이라 복원 write 도 하나씩 순차 실행. 선점(epoch 변경)이
+  /// 끼면 체인을 멈추고, 개별 실패는 건너뛰고 다음 스트림을 계속 시도한다
+  /// (한 스트림 write 거부가 나머지 복원까지 막지 않게). 실패분은 pending
+  /// 유지 → 다음 flush 에서 재시도.
+  private func restoreNextPendingSchedule(
+    epoch: Int,
+    skipping: Set<String> = [],
+    completion: @escaping () -> Void
+  ) {
+    guard manualAbortEpoch == epoch else {
+      print("[SCHEDULE] restore chain preempted — resume on next flush")
+      completion()
+      return
+    }
+    guard let (stream, interval) = pendingScheduleRestores.first(
+      where: { !skipping.contains($0.key) }
+    ) else {
+      completion()
+      return
+    }
+    let done: (Bool) -> Void = { ok in
+      var skipped = skipping
+      if ok {
+        self.pendingScheduleRestores.removeValue(forKey: stream)
+        self.scheduleStateCache[stream] = true
+        print("[SCHEDULE] \(stream) restored")
+      } else {
+        print("[SCHEDULE] \(stream) restore failed — retry on next flush")
+        skipped.insert(stream)
+      }
+      self.mainQueue.asyncAfter(deadline: .now() + 0.3) {
+        self.restoreNextPendingSchedule(epoch: epoch, skipping: skipped, completion: completion)
+      }
+    }
+    switch stream {
+    case "hr":
+      retrySetSchedualHrOn(interval: interval, completion: done)
+    case "spo2":
+      QCSDKCmdCreator.setSchedualBOInfoOn(true, success: { _ in done(true) }, fail: { done(false) })
+    case "stress":
+      QCSDKCmdCreator.setSchedualStressStatus(true) { error in done(error == nil) }
+    case "hrv":
+      QCSDKCmdCreator.setSchedualHRVStatus(true) { error in done(error == nil) }
+    default:
+      pendingScheduleRestores.removeValue(forKey: stream)
+      mainQueue.async {
+        self.restoreNextPendingSchedule(epoch: epoch, skipping: skipping, completion: completion)
+      }
+    }
+  }
 
   private var realtimeStepHooked = false
   private var realtimeBatteryHooked = false
   private var lastLowBatteryNotified: Int?
   private var healthEventSink: FlutterEventSink?
+  private var touchEventSink: FlutterEventSink?
+  private var rosaryTouchEnabled = false
   private let mainQueue = DispatchQueue.main
 
   private func invokeFlutterResult(_ result: @escaping FlutterResult, _ value: Any?) {
@@ -250,6 +423,9 @@ final class IosBleBridge: NSObject {
 
     healthEventChannel = FlutterEventChannel(name: healthEventChannelName, binaryMessenger: messenger)
     healthEventChannel.setStreamHandler(HealthEventStreamHandler(bridge: self))
+
+    touchEventChannel = FlutterEventChannel(name: touchEventChannelName, binaryMessenger: messenger)
+    touchEventChannel.setStreamHandler(TouchEventStreamHandler(bridge: self))
 
     fgChannel = FlutterMethodChannel(name: fgChannelName, binaryMessenger: messenger)
     fgChannel.setMethodCallHandler(handleForeground)
@@ -304,6 +480,58 @@ final class IosBleBridge: NSObject {
 
   private func emitHealthDataReady() {
     healthEventSink?(["type": "healthDataReady"])
+  }
+
+  func setTouchEventSink(_ sink: FlutterEventSink?) {
+    touchEventSink = sink
+  }
+
+  // MARK: - 묵주기도 링 터치 카운트
+  //
+  // 터치 컨트롤을 TakePhoto 모드로 설정하면 탭할 때마다 QCSDKManager 의
+  // takePicture 콜백이 호출된다. 카메라는 열지 않고 탭 이벤트로만 사용한다.
+  // 측정 세션과 완전히 독립 — 자동 측정과 충돌하지 않는다.
+
+  private func emitRingTap() {
+    mainQueue.async { [weak self] in
+      guard let self = self, self.rosaryTouchEnabled else { return }
+      self.touchEventSink?(["type": "ringTap"])
+    }
+  }
+
+  private func enableRosaryTouch(strength: Int, result: @escaping FlutterResult) {
+    let manager = QCSDKManager.shareInstance()
+    manager.takePicture = { [weak self] in
+      self?.emitRingTap()
+    }
+    rosaryTouchEnabled = true
+
+    let type = QCTouchGestureControlType(rawValue: 5) ?? .off  // 5 = TakePhoto
+    QCSDKCmdCreator.setTouch(
+      type,
+      strength: min(max(strength, 1), 10)
+    ) { [weak self] error in
+      if let error = error {
+        self?.rosaryTouchEnabled = false
+        self?.invokeFlutterResult(result, FlutterError(
+          code: "TOUCH_ENABLE_FAIL",
+          message: error.localizedDescription,
+          details: nil
+        ))
+        return
+      }
+      self?.invokeFlutterResult(result, ["enabled": true])
+    }
+  }
+
+  private func disableRosaryTouch(result: @escaping FlutterResult) {
+    rosaryTouchEnabled = false
+    QCSDKManager.shareInstance().takePicture = {}
+
+    QCSDKCmdCreator.setTouch(.off, strength: 5) { [weak self] _ in
+      // 끄기 실패해도 앱 쪽 카운트는 이미 중단됨 — 성공으로 처리.
+      self?.invokeFlutterResult(result, true)
+    }
   }
 
   /// 연결된 상태에서 반지 저장소 → pending 큐 (Session idle일 때만).
@@ -563,9 +791,22 @@ final class IosBleBridge: NSObject {
       executeManualMeasurement(call: call, result: result)
     case "isMeasurementBusy":
       result(RingMeasurementSession.shared.isBusy)
+    case "restorePendingSchedules":
+      restorePendingSchedules(result: result)
     case "resetMeasurementSession":
-      RingMeasurementSession.shared.abortManualAndReset()
-      result(true)
+      manualAbortEpoch += 1
+      // 1) 이미 시작된 측정 핸들러 즉시 종료 (타임아웃·옵저버 정리 포함)
+      fireMeasurementAborts()
+      // 2) 링 측정 엔진 정지 — stop 완료 후 응답해야 다음 수동 측정이
+      //    엔진 충돌(raw=0) 없이 시작된다.
+      RingMeasurementSession.shared.abortManualAndReset {
+        result(true)
+      }
+    case "enableRosaryTouch":
+      let strength = (call.arguments as? [String: Any])?["strength"] as? Int ?? 5
+      enableRosaryTouch(strength: strength, result: result)
+    case "disableRosaryTouch":
+      disableRosaryTouch(result: result)
     case "collectHealthIfIdle":
       let force = (call.arguments as? [String: Any])?["force"] as? Bool ?? false
       RingMeasurementSession.shared.collectHealthIfIdle(force: force) { ok in
@@ -622,13 +863,17 @@ final class IosBleBridge: NSObject {
       result(true)
     case "fetchPendingHealthRecords":
       result(IosPendingHealthQueue.readAll())
+    case "fetchPendingHealthSnapshot":
+      let snap = IosPendingHealthQueue.snapshot()
+      result(["records": snap.records, "fetchedLineCount": snap.lineCount])
     case "clearPendingHealthRecords":
       IosPendingHealthQueue.clear()
       result(true)
     case "replacePendingHealthRecords":
       let args = call.arguments as? [String: Any]
       let raw = args?["records"] as? [[String: Any]] ?? []
-      IosPendingHealthQueue.replaceAll(raw)
+      let fetched = args?["fetchedLineCount"] as? Int ?? Int.max
+      IosPendingHealthQueue.replaceAll(raw, fetchedLineCount: fetched)
       result(true)
     case "collectPendingHealthNow":
       guard connected?.state == .connected else {
@@ -1147,6 +1392,7 @@ final class IosBleBridge: NSObject {
 
   private func readHrSetting(result: @escaping FlutterResult) {
     QCSDKCmdCreator.getSchedualHeartRateStatusAndInterval(success: { enable, interval in
+      self.scheduleStateCache["hr"] = enable
       result(["isEnable": enable, "interval": Int(interval)])
     }, fail: {
       result(FlutterError(code: "HR_READ_FAIL", message: "heart rate status read failed", details: nil))
@@ -1155,6 +1401,8 @@ final class IosBleBridge: NSObject {
 
   private func writeHrSetting(isEnable: Bool, interval: Int, result: @escaping FlutterResult) {
     QCSDKCmdCreator.setSchedualHeartRateStatus(isEnable, timeInterval: interval, success: {
+      self.scheduleStateCache["hr"] = isEnable
+      if isEnable { self.pendingScheduleRestores.removeValue(forKey: "hr") }
       result(["isEnable": isEnable, "interval": interval])
     }, fail: {
       result(FlutterError(code: "HR_WRITE_FAIL", message: "heart rate write failed", details: nil))
@@ -1163,6 +1411,7 @@ final class IosBleBridge: NSObject {
 
   private func readSpo2Setting(result: @escaping FlutterResult) {
     QCSDKCmdCreator.getSchedualBOInfoSuccess({ featureOn in
+      self.scheduleStateCache["spo2"] = featureOn
       result(["isEnable": featureOn])
     }, fail: {
       result(FlutterError(code: "SPO2_READ_FAIL", message: "spo2 read failed", details: nil))
@@ -1171,6 +1420,8 @@ final class IosBleBridge: NSObject {
 
   private func writeSpo2Setting(isEnable: Bool, result: @escaping FlutterResult) {
     QCSDKCmdCreator.setSchedualBOInfoOn(isEnable, success: { featureOn in
+      self.scheduleStateCache["spo2"] = isEnable
+      if isEnable { self.pendingScheduleRestores.removeValue(forKey: "spo2") }
       result(["isEnable": featureOn])
     }, fail: {
       result(FlutterError(code: "SPO2_WRITE_FAIL", message: "spo2 write failed", details: nil))
@@ -1239,6 +1490,7 @@ final class IosBleBridge: NSObject {
       if let err = error {
         result(FlutterError(code: "PRESS_READ_FAIL", message: err.localizedDescription, details: nil))
       } else {
+        self.scheduleStateCache["stress"] = enable
         result(["isEnable": enable])
       }
     })
@@ -1249,6 +1501,8 @@ final class IosBleBridge: NSObject {
       if let err = error {
         result(FlutterError(code: "PRESS_WRITE_FAIL", message: err.localizedDescription, details: nil))
       } else {
+        self.scheduleStateCache["stress"] = isEnable
+        if isEnable { self.pendingScheduleRestores.removeValue(forKey: "stress") }
         result(["isEnable": isEnable])
       }
     })
@@ -1259,6 +1513,7 @@ final class IosBleBridge: NSObject {
       if let err = error {
         result(FlutterError(code: "HRV_READ_FAIL", message: err.localizedDescription, details: nil))
       } else {
+        self.scheduleStateCache["hrv"] = enable
         result(["isEnable": enable])
       }
     })
@@ -1269,6 +1524,8 @@ final class IosBleBridge: NSObject {
       if let err = error {
         result(FlutterError(code: "HRV_WRITE_FAIL", message: err.localizedDescription, details: nil))
       } else {
+        self.scheduleStateCache["hrv"] = isEnable
+        if isEnable { self.pendingScheduleRestores.removeValue(forKey: "hrv") }
         result(["isEnable": isEnable])
       }
     })
@@ -1724,20 +1981,6 @@ final class IosBleBridge: NSObject {
     })
   }
 
-  private func retrySetSchedualBOOn(attempt: Int = 0) {
-    QCSDKCmdCreator.setSchedualBOInfoOn(true, success: { _ in
-      print("[SPO2_MANUAL] scheduled SpO2 restored")
-    }, fail: {
-      if attempt < 2 {
-        self.mainQueue.asyncAfter(deadline: .now() + 0.5) {
-          self.retrySetSchedualBOOn(attempt: attempt + 1)
-        }
-      } else {
-        print("[SPO2_MANUAL] scheduled SpO2 restore failed")
-      }
-    })
-  }
-
   private func retrySetSchedualHrOff(
     interval: Int,
     attempt: Int = 0,
@@ -1752,20 +1995,6 @@ final class IosBleBridge: NSObject {
         }
       } else {
         completion(false)
-      }
-    })
-  }
-
-  private func retrySetSchedualHrOn(interval: Int, attempt: Int = 0) {
-    QCSDKCmdCreator.setSchedualHeartRateStatus(true, timeInterval: interval, success: {
-      print("[HR_MANUAL] scheduled HR restored (interval=\(interval))")
-    }, fail: {
-      if attempt < 2 {
-        self.mainQueue.asyncAfter(deadline: .now() + 0.5) {
-          self.retrySetSchedualHrOn(interval: interval, attempt: attempt + 1)
-        }
-      } else {
-        print("[HR_MANUAL] scheduled HR restore failed")
       }
     })
   }
@@ -1802,40 +2031,71 @@ final class IosBleBridge: NSObject {
     })
   }
 
-  /// 수동 SpO₂ — `startToMeasuring(.bloodOxygen)` 단일 경로. 스케줄 복구는 Flutter `enableRingAutoMonitoring` 에 맡긴다.
+  /// 수동 SpO₂ — `startToMeasuring(.bloodOxygen)` 단일 경로.
   private func syncManualBloodOxygen(result: @escaping FlutterResult) {
     let manager = QCSDKManager.shareInstance()
     clearManualMeasuringHooks(manager)
+    let epoch = manualAbortEpoch
 
-    let begin: () -> Void = {
+    let begin: (Bool) -> Void = { restoreScheduledBo in
       self.mainQueue.asyncAfter(deadline: .now() + 0.4) {
-        self.beginManualBloodOxygenMeasuring(result: result)
+        guard self.manualAbortEpoch == epoch else {
+          print("[SPO2_MANUAL] aborted before start")
+          self.invokeFlutterResult(
+            result,
+            FlutterError(code: "SPO2_MANUAL_ABORTED", message: "preempted before start", details: nil)
+          )
+          return
+        }
+        self.beginManualBloodOxygenMeasuring(result: result, restoreScheduledBo: restoreScheduledBo)
       }
     }
 
-    QCSDKCmdCreator.getSchedualBOInfoSuccess({ enabled in
+    let handleScheduleState: (Bool) -> Void = { enabled in
       guard enabled else {
-        print("[SPO2_MANUAL] scheduled SpO2 already off")
-        begin()
+        // 이전 복원 실패로 꺼진 채일 수 있음 — 복원 대상으로 등록.
+        self.markSchedulePendingRestore("spo2")
+        begin(false)
         return
       }
       self.retrySetSchedualBOOff { paused in
         print("[SPO2_MANUAL] scheduled SpO2 pause \(paused ? "ok" : "failed")")
-        begin()
+        if paused {
+          // 복원은 Dart 큐의 restorePendingSchedules 가 직렬 수행.
+          self.markSchedulePendingRestore("spo2")
+        }
+        begin(paused)
       }
+    }
+
+    // 캐시 히트 시 getSchedual read 생략 — 측정 시작 단축.
+    if let cached = scheduleStateCache["spo2"] {
+      print("[SPO2_MANUAL] scheduled SpO2 \(cached ? "on" : "off") (cached)")
+      handleScheduleState(cached)
+      return
+    }
+
+    QCSDKCmdCreator.getSchedualBOInfoSuccess({ enabled in
+      self.scheduleStateCache["spo2"] = enabled
+      if !enabled { print("[SPO2_MANUAL] scheduled SpO2 already off") }
+      handleScheduleState(enabled)
     }, fail: {
       print("[SPO2_MANUAL] getSchedualBOInfo failed — measure anyway")
-      begin()
+      begin(false)
     })
   }
 
-  private func beginManualBloodOxygenMeasuring(result: @escaping FlutterResult) {
+  private func beginManualBloodOxygenMeasuring(
+    result: @escaping FlutterResult,
+    restoreScheduledBo: Bool = false
+  ) {
     let manager = QCSDKManager.shareInstance()
     var replied = false
     var latestValue = 0
     var spo2Observer: NSObjectProtocol?
     var finishObserver: NSObjectProtocol?
     var timeout: DispatchWorkItem?
+    var abortToken: Int?
 
     func extractSpO2Value(_ raw: Any?) -> Int {
       if let n = raw as? NSNumber { return n.intValue }
@@ -1871,12 +2131,20 @@ final class IosBleBridge: NSObject {
       }
       manager.boMeasuring = { _ in }
       manager.measuringFail = { }
+      if let token = abortToken {
+        self.unregisterMeasurementAbort(token)
+        abortToken = nil
+      }
     }
 
     func finish(_ value: Any?) {
       guard !replied else { return }
       replied = true
       cleanup()
+      // 측정 엔진 정지 — 방치하면 이후 스케줄 get/set 명령이 계속 실패한다.
+      manager.stopToMeasuring(withOperateType: .bloodOxygen) { _, _ in }
+      manager.stopToMeasuring(withOperateType: .oneKeyMeasure) { _, _ in }
+      // 스케줄 복원은 pendingScheduleRestores 경유 — 여기서 직접 write 안 한다.
       self.invokeFlutterResult(result, value)
     }
     func finishOk(_ value: Int) {
@@ -1898,6 +2166,18 @@ final class IosBleBridge: NSObject {
       }
     }
     mainQueue.asyncAfter(deadline: .now() + .seconds(45), execute: timeout!)
+
+    // 선점 시 즉시 종료 — 좀비 타임아웃 방지 (엔진 stop·스케줄 복원은 외부 담당).
+    abortToken = registerMeasurementAbort {
+      guard !replied else { return }
+      print("[SPO2_MANUAL] aborted mid-measure (preempted)")
+      replied = true
+      cleanup()
+      self.invokeFlutterResult(
+        result,
+        FlutterError(code: "SPO2_MANUAL_ABORTED", message: "preempted mid-measure", details: nil)
+      )
+    }
 
     _ = OdmBandNotifyCenter.registerNotify()
     spo2Observer = NotificationCenter.default.addObserver(
@@ -1985,39 +2265,78 @@ final class IosBleBridge: NSObject {
     clearManualMeasuringHooks(manager)
 
     var savedHrInterval = IosRingMeasurementPolicy.ringAutoHeartIntervalMinutes
+    let epoch = manualAbortEpoch
 
-    let begin: () -> Void = {
+    let begin: (Bool) -> Void = { restoreScheduledHr in
       self.mainQueue.asyncAfter(deadline: .now() + 0.4) {
-        self.beginManualHeartRateMeasuring(result: result)
+        // 선점(resetMeasurementSession)이 이 지연 사이에 끼면 stop 이후에
+        // startToMeasuring 이 실행돼 고아 세션이 남는다 — 시작 전 취소.
+        guard self.manualAbortEpoch == epoch else {
+          print("[HR_MANUAL] aborted before start")
+          self.invokeFlutterResult(
+            result,
+            FlutterError(code: "HR_MANUAL_ABORTED", message: "preempted before start", details: nil)
+          )
+          return
+        }
+        self.beginManualHeartRateMeasuring(
+          result: result,
+          restoreScheduledHr: restoreScheduledHr,
+          scheduledHrInterval: savedHrInterval
+        )
       }
+    }
+
+    let handleScheduleState: (Bool) -> Void = { enabled in
+      guard enabled else {
+        // 이전 복원 실패로 꺼진 채일 수 있음 — 측정 후 복원 대상으로 등록
+        // (정책상 펌웨어 스케줄은 항상 ON — 오프라인 축적 백업).
+        self.markSchedulePendingRestore("hr", interval: savedHrInterval)
+        begin(false)
+        return
+      }
+      self.retrySetSchedualHrOff(interval: savedHrInterval) { paused in
+        print("[HR_MANUAL] scheduled HR pause \(paused ? "ok" : "failed")")
+        if paused {
+          // 복원은 Dart 큐의 restorePendingSchedules 가 직렬 수행.
+          self.markSchedulePendingRestore("hr", interval: savedHrInterval)
+        }
+        begin(paused)
+      }
+    }
+
+    // 캐시 히트 시 getSchedual read(실패 시 수 초 타임아웃) 생략 — 측정 시작 단축.
+    if let cached = scheduleStateCache["hr"] {
+      print("[HR_MANUAL] scheduled HR \(cached ? "on" : "off") (cached)")
+      handleScheduleState(cached)
+      return
     }
 
     QCSDKCmdCreator.getSchedualHeartRateStatusAndInterval(success: { enabled, interval in
       if interval > 0 {
         savedHrInterval = interval
       }
-      guard enabled else {
-        print("[HR_MANUAL] scheduled HR already off")
-        begin()
-        return
-      }
-      self.retrySetSchedualHrOff(interval: savedHrInterval) { paused in
-        print("[HR_MANUAL] scheduled HR pause \(paused ? "ok" : "failed")")
-        begin()
-      }
+      self.scheduleStateCache["hr"] = enabled
+      if !enabled { print("[HR_MANUAL] scheduled HR already off") }
+      handleScheduleState(enabled)
     }, fail: {
       print("[HR_MANUAL] getSchedualHeartRate failed — measure anyway")
-      begin()
+      begin(false)
     })
   }
 
-  private func beginManualHeartRateMeasuring(result: @escaping FlutterResult) {
+  private func beginManualHeartRateMeasuring(
+    result: @escaping FlutterResult,
+    restoreScheduledHr: Bool = false,
+    scheduledHrInterval: Int = IosRingMeasurementPolicy.ringAutoHeartIntervalMinutes
+  ) {
     let manager = QCSDKManager.shareInstance()
     var replied = false
     var latestValue = 0
     var hrObserver: NSObjectProtocol?
     var finishObserver: NSObjectProtocol?
     var timeout: DispatchWorkItem?
+    var abortToken: Int?
 
     func extractHrValue(_ raw: Any?) -> Int {
       if let n = raw as? NSNumber { return n.intValue }
@@ -2052,12 +2371,20 @@ final class IosBleBridge: NSObject {
       manager.hrMeasuring = { _ in }
       manager.realTimeHeartRate = { _ in }
       manager.measuringFail = { }
+      if let token = abortToken {
+        self.unregisterMeasurementAbort(token)
+        abortToken = nil
+      }
     }
 
     func finish(_ value: Any?) {
       guard !replied else { return }
       replied = true
       cleanup()
+      // 측정 엔진 정지 — 방치하면 이후 스케줄 get/set 명령이 계속 실패한다.
+      manager.stopToMeasuring(withOperateType: .heartRate) { _, _ in }
+      manager.stopToMeasuring(withOperateType: .oneKeyMeasure) { _, _ in }
+      // 스케줄 복원은 pendingScheduleRestores 경유 — 여기서 직접 write 안 한다.
       self.invokeFlutterResult(result, value)
     }
 
@@ -2080,6 +2407,19 @@ final class IosBleBridge: NSObject {
       }
     }
     mainQueue.asyncAfter(deadline: .now() + .seconds(45), execute: timeout!)
+
+    // 선점(resetMeasurementSession) 시 즉시 종료 — 45초 좀비 타임아웃 방지.
+    // 엔진 stop·스케줄 복원은 외부(선점 측·restorePendingSchedules) 담당.
+    abortToken = registerMeasurementAbort {
+      guard !replied else { return }
+      print("[HR_MANUAL] aborted mid-measure (preempted)")
+      replied = true
+      cleanup()
+      self.invokeFlutterResult(
+        result,
+        FlutterError(code: "HR_MANUAL_ABORTED", message: "preempted mid-measure", details: nil)
+      )
+    }
 
     _ = OdmBandNotifyCenter.registerNotify()
     hrObserver = NotificationCenter.default.addObserver(
@@ -2206,31 +2546,61 @@ final class IosBleBridge: NSObject {
   private func pauseStressPipelineForManual(completion: @escaping () -> Void) {
     let group = DispatchGroup()
 
-    group.enter()
-    QCSDKCmdCreator.getSchedualStressStatus(finshed: { enabled, _ in
+    let handleStressState: (Bool) -> Void = { enabled in
       guard enabled else {
-        print("[STRESS_MANUAL] scheduled stress already off")
+        // 이전 복원 실패로 꺼진 채일 수 있음 — 복원 대상으로 등록.
+        self.markSchedulePendingRestore("stress")
         group.leave()
         return
       }
       self.retrySetSchedualStressOff { paused in
         print("[STRESS_MANUAL] scheduled stress pause \(paused ? "ok" : "failed")")
+        if paused {
+          self.markSchedulePendingRestore("stress")
+        }
         group.leave()
       }
-    })
+    }
 
     group.enter()
-    QCSDKCmdCreator.getSchedualHRV(finshed: { enabled, _ in
+    if let cached = scheduleStateCache["stress"] {
+      print("[STRESS_MANUAL] scheduled stress \(cached ? "on" : "off") (cached)")
+      handleStressState(cached)
+    } else {
+      QCSDKCmdCreator.getSchedualStressStatus(finshed: { enabled, _ in
+        self.scheduleStateCache["stress"] = enabled
+        if !enabled { print("[STRESS_MANUAL] scheduled stress already off") }
+        handleStressState(enabled)
+      })
+    }
+
+    let handleHrvState: (Bool) -> Void = { enabled in
       guard enabled else {
-        print("[STRESS_MANUAL] scheduled HRV already off")
+        // 이전 복원 실패로 꺼진 채일 수 있음 — 복원 대상으로 등록.
+        self.markSchedulePendingRestore("hrv")
         group.leave()
         return
       }
       self.retrySetSchedualHrvOff { paused in
         print("[STRESS_MANUAL] scheduled HRV pause \(paused ? "ok" : "failed")")
+        if paused {
+          self.markSchedulePendingRestore("hrv")
+        }
         group.leave()
       }
-    })
+    }
+
+    group.enter()
+    if let cached = scheduleStateCache["hrv"] {
+      print("[STRESS_MANUAL] scheduled HRV \(cached ? "on" : "off") (cached)")
+      handleHrvState(cached)
+    } else {
+      QCSDKCmdCreator.getSchedualHRV(finshed: { enabled, _ in
+        self.scheduleStateCache["hrv"] = enabled
+        if !enabled { print("[STRESS_MANUAL] scheduled HRV already off") }
+        handleHrvState(enabled)
+      })
+    }
 
     group.notify(queue: mainQueue, execute: completion)
   }
@@ -2262,9 +2632,18 @@ final class IosBleBridge: NSObject {
 
   /// 수동 스트레스 — 심박/SpO₂ 와 동일: 스케줄 pause → in-flight stop → `startToMeasuring(.stress)`.
   private func syncManualPressure(result: @escaping FlutterResult) {
+    let epoch = manualAbortEpoch
     pauseStressPipelineForManual {
       self.stopInFlightMeasures {
         self.mainQueue.asyncAfter(deadline: .now() + 0.8) {
+          guard self.manualAbortEpoch == epoch else {
+            print("[STRESS_MANUAL] aborted before start")
+            self.invokeFlutterResult(
+              result,
+              FlutterError(code: "STRESS_MANUAL_ABORTED", message: "preempted before start", details: nil)
+            )
+            return
+          }
           self.beginManualStressMeasuring(result: result)
         }
       }
@@ -2278,6 +2657,7 @@ final class IosBleBridge: NSObject {
     var stressObserver: NSObjectProtocol?
     var hrvObserver: NSObjectProtocol?
     var timeout: DispatchWorkItem?
+    var abortToken: Int?
 
     func scoreInRange(_ v: Int) -> Int {
       (v > 0 && v <= 100) ? v : 0
@@ -2340,13 +2720,21 @@ final class IosBleBridge: NSObject {
         hrvObserver = nil
       }
       manager.measuringFail = { }
+      if let token = abortToken {
+        self.unregisterMeasurementAbort(token)
+        abortToken = nil
+      }
     }
 
     func finish(_ value: Any?) {
       guard !replied else { return }
       replied = true
       cleanup()
+      // QC 스트레스는 HRV·oneKey 파이프라인 — .stress 만 멈추면 나머지
+      // 엔진이 잔류해 이후 모든 set/get 이 -1 로 거부된다(채널 웨지).
       manager.stopToMeasuring(withOperateType: .stress) { _, _ in }
+      manager.stopToMeasuring(withOperateType: .HRV) { _, _ in }
+      manager.stopToMeasuring(withOperateType: .oneKeyMeasure) { _, _ in }
       self.invokeFlutterResult(result, value)
     }
 
@@ -2369,6 +2757,18 @@ final class IosBleBridge: NSObject {
       }
     }
     mainQueue.asyncAfter(deadline: .now() + .seconds(90), execute: timeout!)
+
+    // 선점 시 즉시 종료 — 좀비 타임아웃 방지 (엔진 stop 은 선점 측 담당).
+    abortToken = registerMeasurementAbort {
+      guard !replied else { return }
+      print("[STRESS_MANUAL] aborted mid-measure (preempted)")
+      replied = true
+      cleanup()
+      self.invokeFlutterResult(
+        result,
+        FlutterError(code: "STRESS_MANUAL_ABORTED", message: "preempted mid-measure", details: nil)
+      )
+    }
 
     _ = OdmBandNotifyCenter.registerNotify()
     stressObserver = NotificationCenter.default.addObserver(
@@ -2760,6 +3160,8 @@ extension IosBleBridge: CBCentralManagerDelegate {
     pendingFreshReconnectPeripheral = nil
     keepaliveConnectInFlight = false
     RingMeasurementSession.shared.resetToIdle()
+    // 재연결 시 스케줄 상태 캐시 무효화 — 오프라인 동안 바뀌었을 수 있음.
+    scheduleStateCache.removeAll()
     if let peripheral = connected {
       emit([
         "type": "connected",

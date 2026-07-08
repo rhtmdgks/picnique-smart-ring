@@ -383,8 +383,47 @@ class $HeartDetailsTable extends HeartDetails
     type: DriftSqlType.int,
     requiredDuringInsert: true,
   );
+  static const VerificationMeta _sourceMeta = const VerificationMeta('source');
   @override
-  List<GeneratedColumn> get $columns => [id, date, bpm];
+  late final GeneratedColumn<String> source = GeneratedColumn<String>(
+    'source',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant('firmwareAuto'),
+  );
+  static const VerificationMeta _dedupeKeyMeta = const VerificationMeta(
+    'dedupeKey',
+  );
+  @override
+  late final GeneratedColumn<String> dedupeKey = GeneratedColumn<String>(
+    'dedupe_key',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _ringSeqMeta = const VerificationMeta(
+    'ringSeq',
+  );
+  @override
+  late final GeneratedColumn<String> ringSeq = GeneratedColumn<String>(
+    'ring_seq',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    id,
+    date,
+    bpm,
+    source,
+    dedupeKey,
+    ringSeq,
+  ];
   @override
   String get aliasedName => _alias ?? actualTableName;
   @override
@@ -416,6 +455,24 @@ class $HeartDetailsTable extends HeartDetails
     } else if (isInserting) {
       context.missing(_bpmMeta);
     }
+    if (data.containsKey('source')) {
+      context.handle(
+        _sourceMeta,
+        source.isAcceptableOrUnknown(data['source']!, _sourceMeta),
+      );
+    }
+    if (data.containsKey('dedupe_key')) {
+      context.handle(
+        _dedupeKeyMeta,
+        dedupeKey.isAcceptableOrUnknown(data['dedupe_key']!, _dedupeKeyMeta),
+      );
+    }
+    if (data.containsKey('ring_seq')) {
+      context.handle(
+        _ringSeqMeta,
+        ringSeq.isAcceptableOrUnknown(data['ring_seq']!, _ringSeqMeta),
+      );
+    }
     return context;
   }
 
@@ -437,6 +494,18 @@ class $HeartDetailsTable extends HeartDetails
         DriftSqlType.int,
         data['${effectivePrefix}bpm'],
       )!,
+      source: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}source'],
+      )!,
+      dedupeKey: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}dedupe_key'],
+      ),
+      ringSeq: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}ring_seq'],
+      ),
     );
   }
 
@@ -450,13 +519,30 @@ class HeartDetail extends DataClass implements Insertable<HeartDetail> {
   final int id;
   final DateTime date;
   final int bpm;
-  const HeartDetail({required this.id, required this.date, required this.bpm});
+  final String source;
+  final String? dedupeKey;
+  final String? ringSeq;
+  const HeartDetail({
+    required this.id,
+    required this.date,
+    required this.bpm,
+    required this.source,
+    this.dedupeKey,
+    this.ringSeq,
+  });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
     final map = <String, Expression>{};
     map['id'] = Variable<int>(id);
     map['date'] = Variable<DateTime>(date);
     map['bpm'] = Variable<int>(bpm);
+    map['source'] = Variable<String>(source);
+    if (!nullToAbsent || dedupeKey != null) {
+      map['dedupe_key'] = Variable<String>(dedupeKey);
+    }
+    if (!nullToAbsent || ringSeq != null) {
+      map['ring_seq'] = Variable<String>(ringSeq);
+    }
     return map;
   }
 
@@ -465,6 +551,13 @@ class HeartDetail extends DataClass implements Insertable<HeartDetail> {
       id: Value(id),
       date: Value(date),
       bpm: Value(bpm),
+      source: Value(source),
+      dedupeKey: dedupeKey == null && nullToAbsent
+          ? const Value.absent()
+          : Value(dedupeKey),
+      ringSeq: ringSeq == null && nullToAbsent
+          ? const Value.absent()
+          : Value(ringSeq),
     );
   }
 
@@ -477,6 +570,9 @@ class HeartDetail extends DataClass implements Insertable<HeartDetail> {
       id: serializer.fromJson<int>(json['id']),
       date: serializer.fromJson<DateTime>(json['date']),
       bpm: serializer.fromJson<int>(json['bpm']),
+      source: serializer.fromJson<String>(json['source']),
+      dedupeKey: serializer.fromJson<String?>(json['dedupeKey']),
+      ringSeq: serializer.fromJson<String?>(json['ringSeq']),
     );
   }
   @override
@@ -486,19 +582,35 @@ class HeartDetail extends DataClass implements Insertable<HeartDetail> {
       'id': serializer.toJson<int>(id),
       'date': serializer.toJson<DateTime>(date),
       'bpm': serializer.toJson<int>(bpm),
+      'source': serializer.toJson<String>(source),
+      'dedupeKey': serializer.toJson<String?>(dedupeKey),
+      'ringSeq': serializer.toJson<String?>(ringSeq),
     };
   }
 
-  HeartDetail copyWith({int? id, DateTime? date, int? bpm}) => HeartDetail(
+  HeartDetail copyWith({
+    int? id,
+    DateTime? date,
+    int? bpm,
+    String? source,
+    Value<String?> dedupeKey = const Value.absent(),
+    Value<String?> ringSeq = const Value.absent(),
+  }) => HeartDetail(
     id: id ?? this.id,
     date: date ?? this.date,
     bpm: bpm ?? this.bpm,
+    source: source ?? this.source,
+    dedupeKey: dedupeKey.present ? dedupeKey.value : this.dedupeKey,
+    ringSeq: ringSeq.present ? ringSeq.value : this.ringSeq,
   );
   HeartDetail copyWithCompanion(HeartDetailsCompanion data) {
     return HeartDetail(
       id: data.id.present ? data.id.value : this.id,
       date: data.date.present ? data.date.value : this.date,
       bpm: data.bpm.present ? data.bpm.value : this.bpm,
+      source: data.source.present ? data.source.value : this.source,
+      dedupeKey: data.dedupeKey.present ? data.dedupeKey.value : this.dedupeKey,
+      ringSeq: data.ringSeq.present ? data.ringSeq.value : this.ringSeq,
     );
   }
 
@@ -507,46 +619,67 @@ class HeartDetail extends DataClass implements Insertable<HeartDetail> {
     return (StringBuffer('HeartDetail(')
           ..write('id: $id, ')
           ..write('date: $date, ')
-          ..write('bpm: $bpm')
+          ..write('bpm: $bpm, ')
+          ..write('source: $source, ')
+          ..write('dedupeKey: $dedupeKey, ')
+          ..write('ringSeq: $ringSeq')
           ..write(')'))
         .toString();
   }
 
   @override
-  int get hashCode => Object.hash(id, date, bpm);
+  int get hashCode => Object.hash(id, date, bpm, source, dedupeKey, ringSeq);
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       (other is HeartDetail &&
           other.id == this.id &&
           other.date == this.date &&
-          other.bpm == this.bpm);
+          other.bpm == this.bpm &&
+          other.source == this.source &&
+          other.dedupeKey == this.dedupeKey &&
+          other.ringSeq == this.ringSeq);
 }
 
 class HeartDetailsCompanion extends UpdateCompanion<HeartDetail> {
   final Value<int> id;
   final Value<DateTime> date;
   final Value<int> bpm;
+  final Value<String> source;
+  final Value<String?> dedupeKey;
+  final Value<String?> ringSeq;
   const HeartDetailsCompanion({
     this.id = const Value.absent(),
     this.date = const Value.absent(),
     this.bpm = const Value.absent(),
+    this.source = const Value.absent(),
+    this.dedupeKey = const Value.absent(),
+    this.ringSeq = const Value.absent(),
   });
   HeartDetailsCompanion.insert({
     this.id = const Value.absent(),
     required DateTime date,
     required int bpm,
+    this.source = const Value.absent(),
+    this.dedupeKey = const Value.absent(),
+    this.ringSeq = const Value.absent(),
   }) : date = Value(date),
        bpm = Value(bpm);
   static Insertable<HeartDetail> custom({
     Expression<int>? id,
     Expression<DateTime>? date,
     Expression<int>? bpm,
+    Expression<String>? source,
+    Expression<String>? dedupeKey,
+    Expression<String>? ringSeq,
   }) {
     return RawValuesInsertable({
       if (id != null) 'id': id,
       if (date != null) 'date': date,
       if (bpm != null) 'bpm': bpm,
+      if (source != null) 'source': source,
+      if (dedupeKey != null) 'dedupe_key': dedupeKey,
+      if (ringSeq != null) 'ring_seq': ringSeq,
     });
   }
 
@@ -554,11 +687,17 @@ class HeartDetailsCompanion extends UpdateCompanion<HeartDetail> {
     Value<int>? id,
     Value<DateTime>? date,
     Value<int>? bpm,
+    Value<String>? source,
+    Value<String?>? dedupeKey,
+    Value<String?>? ringSeq,
   }) {
     return HeartDetailsCompanion(
       id: id ?? this.id,
       date: date ?? this.date,
       bpm: bpm ?? this.bpm,
+      source: source ?? this.source,
+      dedupeKey: dedupeKey ?? this.dedupeKey,
+      ringSeq: ringSeq ?? this.ringSeq,
     );
   }
 
@@ -574,6 +713,15 @@ class HeartDetailsCompanion extends UpdateCompanion<HeartDetail> {
     if (bpm.present) {
       map['bpm'] = Variable<int>(bpm.value);
     }
+    if (source.present) {
+      map['source'] = Variable<String>(source.value);
+    }
+    if (dedupeKey.present) {
+      map['dedupe_key'] = Variable<String>(dedupeKey.value);
+    }
+    if (ringSeq.present) {
+      map['ring_seq'] = Variable<String>(ringSeq.value);
+    }
     return map;
   }
 
@@ -582,7 +730,10 @@ class HeartDetailsCompanion extends UpdateCompanion<HeartDetail> {
     return (StringBuffer('HeartDetailsCompanion(')
           ..write('id: $id, ')
           ..write('date: $date, ')
-          ..write('bpm: $bpm')
+          ..write('bpm: $bpm, ')
+          ..write('source: $source, ')
+          ..write('dedupeKey: $dedupeKey, ')
+          ..write('ringSeq: $ringSeq')
           ..write(')'))
         .toString();
   }
@@ -625,8 +776,47 @@ class $StressDetailsTable extends StressDetails
     type: DriftSqlType.int,
     requiredDuringInsert: true,
   );
+  static const VerificationMeta _sourceMeta = const VerificationMeta('source');
   @override
-  List<GeneratedColumn> get $columns => [id, date, stress];
+  late final GeneratedColumn<String> source = GeneratedColumn<String>(
+    'source',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant('firmwareAuto'),
+  );
+  static const VerificationMeta _dedupeKeyMeta = const VerificationMeta(
+    'dedupeKey',
+  );
+  @override
+  late final GeneratedColumn<String> dedupeKey = GeneratedColumn<String>(
+    'dedupe_key',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _ringSeqMeta = const VerificationMeta(
+    'ringSeq',
+  );
+  @override
+  late final GeneratedColumn<String> ringSeq = GeneratedColumn<String>(
+    'ring_seq',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    id,
+    date,
+    stress,
+    source,
+    dedupeKey,
+    ringSeq,
+  ];
   @override
   String get aliasedName => _alias ?? actualTableName;
   @override
@@ -658,6 +848,24 @@ class $StressDetailsTable extends StressDetails
     } else if (isInserting) {
       context.missing(_stressMeta);
     }
+    if (data.containsKey('source')) {
+      context.handle(
+        _sourceMeta,
+        source.isAcceptableOrUnknown(data['source']!, _sourceMeta),
+      );
+    }
+    if (data.containsKey('dedupe_key')) {
+      context.handle(
+        _dedupeKeyMeta,
+        dedupeKey.isAcceptableOrUnknown(data['dedupe_key']!, _dedupeKeyMeta),
+      );
+    }
+    if (data.containsKey('ring_seq')) {
+      context.handle(
+        _ringSeqMeta,
+        ringSeq.isAcceptableOrUnknown(data['ring_seq']!, _ringSeqMeta),
+      );
+    }
     return context;
   }
 
@@ -679,6 +887,18 @@ class $StressDetailsTable extends StressDetails
         DriftSqlType.int,
         data['${effectivePrefix}stress'],
       )!,
+      source: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}source'],
+      )!,
+      dedupeKey: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}dedupe_key'],
+      ),
+      ringSeq: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}ring_seq'],
+      ),
     );
   }
 
@@ -692,10 +912,16 @@ class StressDetail extends DataClass implements Insertable<StressDetail> {
   final int id;
   final DateTime date;
   final int stress;
+  final String source;
+  final String? dedupeKey;
+  final String? ringSeq;
   const StressDetail({
     required this.id,
     required this.date,
     required this.stress,
+    required this.source,
+    this.dedupeKey,
+    this.ringSeq,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -703,6 +929,13 @@ class StressDetail extends DataClass implements Insertable<StressDetail> {
     map['id'] = Variable<int>(id);
     map['date'] = Variable<DateTime>(date);
     map['stress'] = Variable<int>(stress);
+    map['source'] = Variable<String>(source);
+    if (!nullToAbsent || dedupeKey != null) {
+      map['dedupe_key'] = Variable<String>(dedupeKey);
+    }
+    if (!nullToAbsent || ringSeq != null) {
+      map['ring_seq'] = Variable<String>(ringSeq);
+    }
     return map;
   }
 
@@ -711,6 +944,13 @@ class StressDetail extends DataClass implements Insertable<StressDetail> {
       id: Value(id),
       date: Value(date),
       stress: Value(stress),
+      source: Value(source),
+      dedupeKey: dedupeKey == null && nullToAbsent
+          ? const Value.absent()
+          : Value(dedupeKey),
+      ringSeq: ringSeq == null && nullToAbsent
+          ? const Value.absent()
+          : Value(ringSeq),
     );
   }
 
@@ -723,6 +963,9 @@ class StressDetail extends DataClass implements Insertable<StressDetail> {
       id: serializer.fromJson<int>(json['id']),
       date: serializer.fromJson<DateTime>(json['date']),
       stress: serializer.fromJson<int>(json['stress']),
+      source: serializer.fromJson<String>(json['source']),
+      dedupeKey: serializer.fromJson<String?>(json['dedupeKey']),
+      ringSeq: serializer.fromJson<String?>(json['ringSeq']),
     );
   }
   @override
@@ -732,19 +975,35 @@ class StressDetail extends DataClass implements Insertable<StressDetail> {
       'id': serializer.toJson<int>(id),
       'date': serializer.toJson<DateTime>(date),
       'stress': serializer.toJson<int>(stress),
+      'source': serializer.toJson<String>(source),
+      'dedupeKey': serializer.toJson<String?>(dedupeKey),
+      'ringSeq': serializer.toJson<String?>(ringSeq),
     };
   }
 
-  StressDetail copyWith({int? id, DateTime? date, int? stress}) => StressDetail(
+  StressDetail copyWith({
+    int? id,
+    DateTime? date,
+    int? stress,
+    String? source,
+    Value<String?> dedupeKey = const Value.absent(),
+    Value<String?> ringSeq = const Value.absent(),
+  }) => StressDetail(
     id: id ?? this.id,
     date: date ?? this.date,
     stress: stress ?? this.stress,
+    source: source ?? this.source,
+    dedupeKey: dedupeKey.present ? dedupeKey.value : this.dedupeKey,
+    ringSeq: ringSeq.present ? ringSeq.value : this.ringSeq,
   );
   StressDetail copyWithCompanion(StressDetailsCompanion data) {
     return StressDetail(
       id: data.id.present ? data.id.value : this.id,
       date: data.date.present ? data.date.value : this.date,
       stress: data.stress.present ? data.stress.value : this.stress,
+      source: data.source.present ? data.source.value : this.source,
+      dedupeKey: data.dedupeKey.present ? data.dedupeKey.value : this.dedupeKey,
+      ringSeq: data.ringSeq.present ? data.ringSeq.value : this.ringSeq,
     );
   }
 
@@ -753,46 +1012,67 @@ class StressDetail extends DataClass implements Insertable<StressDetail> {
     return (StringBuffer('StressDetail(')
           ..write('id: $id, ')
           ..write('date: $date, ')
-          ..write('stress: $stress')
+          ..write('stress: $stress, ')
+          ..write('source: $source, ')
+          ..write('dedupeKey: $dedupeKey, ')
+          ..write('ringSeq: $ringSeq')
           ..write(')'))
         .toString();
   }
 
   @override
-  int get hashCode => Object.hash(id, date, stress);
+  int get hashCode => Object.hash(id, date, stress, source, dedupeKey, ringSeq);
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       (other is StressDetail &&
           other.id == this.id &&
           other.date == this.date &&
-          other.stress == this.stress);
+          other.stress == this.stress &&
+          other.source == this.source &&
+          other.dedupeKey == this.dedupeKey &&
+          other.ringSeq == this.ringSeq);
 }
 
 class StressDetailsCompanion extends UpdateCompanion<StressDetail> {
   final Value<int> id;
   final Value<DateTime> date;
   final Value<int> stress;
+  final Value<String> source;
+  final Value<String?> dedupeKey;
+  final Value<String?> ringSeq;
   const StressDetailsCompanion({
     this.id = const Value.absent(),
     this.date = const Value.absent(),
     this.stress = const Value.absent(),
+    this.source = const Value.absent(),
+    this.dedupeKey = const Value.absent(),
+    this.ringSeq = const Value.absent(),
   });
   StressDetailsCompanion.insert({
     this.id = const Value.absent(),
     required DateTime date,
     required int stress,
+    this.source = const Value.absent(),
+    this.dedupeKey = const Value.absent(),
+    this.ringSeq = const Value.absent(),
   }) : date = Value(date),
        stress = Value(stress);
   static Insertable<StressDetail> custom({
     Expression<int>? id,
     Expression<DateTime>? date,
     Expression<int>? stress,
+    Expression<String>? source,
+    Expression<String>? dedupeKey,
+    Expression<String>? ringSeq,
   }) {
     return RawValuesInsertable({
       if (id != null) 'id': id,
       if (date != null) 'date': date,
       if (stress != null) 'stress': stress,
+      if (source != null) 'source': source,
+      if (dedupeKey != null) 'dedupe_key': dedupeKey,
+      if (ringSeq != null) 'ring_seq': ringSeq,
     });
   }
 
@@ -800,11 +1080,17 @@ class StressDetailsCompanion extends UpdateCompanion<StressDetail> {
     Value<int>? id,
     Value<DateTime>? date,
     Value<int>? stress,
+    Value<String>? source,
+    Value<String?>? dedupeKey,
+    Value<String?>? ringSeq,
   }) {
     return StressDetailsCompanion(
       id: id ?? this.id,
       date: date ?? this.date,
       stress: stress ?? this.stress,
+      source: source ?? this.source,
+      dedupeKey: dedupeKey ?? this.dedupeKey,
+      ringSeq: ringSeq ?? this.ringSeq,
     );
   }
 
@@ -820,6 +1106,15 @@ class StressDetailsCompanion extends UpdateCompanion<StressDetail> {
     if (stress.present) {
       map['stress'] = Variable<int>(stress.value);
     }
+    if (source.present) {
+      map['source'] = Variable<String>(source.value);
+    }
+    if (dedupeKey.present) {
+      map['dedupe_key'] = Variable<String>(dedupeKey.value);
+    }
+    if (ringSeq.present) {
+      map['ring_seq'] = Variable<String>(ringSeq.value);
+    }
     return map;
   }
 
@@ -828,7 +1123,10 @@ class StressDetailsCompanion extends UpdateCompanion<StressDetail> {
     return (StringBuffer('StressDetailsCompanion(')
           ..write('id: $id, ')
           ..write('date: $date, ')
-          ..write('stress: $stress')
+          ..write('stress: $stress, ')
+          ..write('source: $source, ')
+          ..write('dedupeKey: $dedupeKey, ')
+          ..write('ringSeq: $ringSeq')
           ..write(')'))
         .toString();
   }
@@ -871,8 +1169,47 @@ class $BloodOxygenDetailsTable extends BloodOxygenDetails
     type: DriftSqlType.int,
     requiredDuringInsert: true,
   );
+  static const VerificationMeta _sourceMeta = const VerificationMeta('source');
   @override
-  List<GeneratedColumn> get $columns => [id, date, spo2];
+  late final GeneratedColumn<String> source = GeneratedColumn<String>(
+    'source',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant('firmwareAuto'),
+  );
+  static const VerificationMeta _dedupeKeyMeta = const VerificationMeta(
+    'dedupeKey',
+  );
+  @override
+  late final GeneratedColumn<String> dedupeKey = GeneratedColumn<String>(
+    'dedupe_key',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _ringSeqMeta = const VerificationMeta(
+    'ringSeq',
+  );
+  @override
+  late final GeneratedColumn<String> ringSeq = GeneratedColumn<String>(
+    'ring_seq',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    id,
+    date,
+    spo2,
+    source,
+    dedupeKey,
+    ringSeq,
+  ];
   @override
   String get aliasedName => _alias ?? actualTableName;
   @override
@@ -904,6 +1241,24 @@ class $BloodOxygenDetailsTable extends BloodOxygenDetails
     } else if (isInserting) {
       context.missing(_spo2Meta);
     }
+    if (data.containsKey('source')) {
+      context.handle(
+        _sourceMeta,
+        source.isAcceptableOrUnknown(data['source']!, _sourceMeta),
+      );
+    }
+    if (data.containsKey('dedupe_key')) {
+      context.handle(
+        _dedupeKeyMeta,
+        dedupeKey.isAcceptableOrUnknown(data['dedupe_key']!, _dedupeKeyMeta),
+      );
+    }
+    if (data.containsKey('ring_seq')) {
+      context.handle(
+        _ringSeqMeta,
+        ringSeq.isAcceptableOrUnknown(data['ring_seq']!, _ringSeqMeta),
+      );
+    }
     return context;
   }
 
@@ -925,6 +1280,18 @@ class $BloodOxygenDetailsTable extends BloodOxygenDetails
         DriftSqlType.int,
         data['${effectivePrefix}spo2'],
       )!,
+      source: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}source'],
+      )!,
+      dedupeKey: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}dedupe_key'],
+      ),
+      ringSeq: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}ring_seq'],
+      ),
     );
   }
 
@@ -939,10 +1306,16 @@ class BloodOxygenDetail extends DataClass
   final int id;
   final DateTime date;
   final int spo2;
+  final String source;
+  final String? dedupeKey;
+  final String? ringSeq;
   const BloodOxygenDetail({
     required this.id,
     required this.date,
     required this.spo2,
+    required this.source,
+    this.dedupeKey,
+    this.ringSeq,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -950,6 +1323,13 @@ class BloodOxygenDetail extends DataClass
     map['id'] = Variable<int>(id);
     map['date'] = Variable<DateTime>(date);
     map['spo2'] = Variable<int>(spo2);
+    map['source'] = Variable<String>(source);
+    if (!nullToAbsent || dedupeKey != null) {
+      map['dedupe_key'] = Variable<String>(dedupeKey);
+    }
+    if (!nullToAbsent || ringSeq != null) {
+      map['ring_seq'] = Variable<String>(ringSeq);
+    }
     return map;
   }
 
@@ -958,6 +1338,13 @@ class BloodOxygenDetail extends DataClass
       id: Value(id),
       date: Value(date),
       spo2: Value(spo2),
+      source: Value(source),
+      dedupeKey: dedupeKey == null && nullToAbsent
+          ? const Value.absent()
+          : Value(dedupeKey),
+      ringSeq: ringSeq == null && nullToAbsent
+          ? const Value.absent()
+          : Value(ringSeq),
     );
   }
 
@@ -970,6 +1357,9 @@ class BloodOxygenDetail extends DataClass
       id: serializer.fromJson<int>(json['id']),
       date: serializer.fromJson<DateTime>(json['date']),
       spo2: serializer.fromJson<int>(json['spo2']),
+      source: serializer.fromJson<String>(json['source']),
+      dedupeKey: serializer.fromJson<String?>(json['dedupeKey']),
+      ringSeq: serializer.fromJson<String?>(json['ringSeq']),
     );
   }
   @override
@@ -979,20 +1369,35 @@ class BloodOxygenDetail extends DataClass
       'id': serializer.toJson<int>(id),
       'date': serializer.toJson<DateTime>(date),
       'spo2': serializer.toJson<int>(spo2),
+      'source': serializer.toJson<String>(source),
+      'dedupeKey': serializer.toJson<String?>(dedupeKey),
+      'ringSeq': serializer.toJson<String?>(ringSeq),
     };
   }
 
-  BloodOxygenDetail copyWith({int? id, DateTime? date, int? spo2}) =>
-      BloodOxygenDetail(
-        id: id ?? this.id,
-        date: date ?? this.date,
-        spo2: spo2 ?? this.spo2,
-      );
+  BloodOxygenDetail copyWith({
+    int? id,
+    DateTime? date,
+    int? spo2,
+    String? source,
+    Value<String?> dedupeKey = const Value.absent(),
+    Value<String?> ringSeq = const Value.absent(),
+  }) => BloodOxygenDetail(
+    id: id ?? this.id,
+    date: date ?? this.date,
+    spo2: spo2 ?? this.spo2,
+    source: source ?? this.source,
+    dedupeKey: dedupeKey.present ? dedupeKey.value : this.dedupeKey,
+    ringSeq: ringSeq.present ? ringSeq.value : this.ringSeq,
+  );
   BloodOxygenDetail copyWithCompanion(BloodOxygenDetailsCompanion data) {
     return BloodOxygenDetail(
       id: data.id.present ? data.id.value : this.id,
       date: data.date.present ? data.date.value : this.date,
       spo2: data.spo2.present ? data.spo2.value : this.spo2,
+      source: data.source.present ? data.source.value : this.source,
+      dedupeKey: data.dedupeKey.present ? data.dedupeKey.value : this.dedupeKey,
+      ringSeq: data.ringSeq.present ? data.ringSeq.value : this.ringSeq,
     );
   }
 
@@ -1001,46 +1406,67 @@ class BloodOxygenDetail extends DataClass
     return (StringBuffer('BloodOxygenDetail(')
           ..write('id: $id, ')
           ..write('date: $date, ')
-          ..write('spo2: $spo2')
+          ..write('spo2: $spo2, ')
+          ..write('source: $source, ')
+          ..write('dedupeKey: $dedupeKey, ')
+          ..write('ringSeq: $ringSeq')
           ..write(')'))
         .toString();
   }
 
   @override
-  int get hashCode => Object.hash(id, date, spo2);
+  int get hashCode => Object.hash(id, date, spo2, source, dedupeKey, ringSeq);
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       (other is BloodOxygenDetail &&
           other.id == this.id &&
           other.date == this.date &&
-          other.spo2 == this.spo2);
+          other.spo2 == this.spo2 &&
+          other.source == this.source &&
+          other.dedupeKey == this.dedupeKey &&
+          other.ringSeq == this.ringSeq);
 }
 
 class BloodOxygenDetailsCompanion extends UpdateCompanion<BloodOxygenDetail> {
   final Value<int> id;
   final Value<DateTime> date;
   final Value<int> spo2;
+  final Value<String> source;
+  final Value<String?> dedupeKey;
+  final Value<String?> ringSeq;
   const BloodOxygenDetailsCompanion({
     this.id = const Value.absent(),
     this.date = const Value.absent(),
     this.spo2 = const Value.absent(),
+    this.source = const Value.absent(),
+    this.dedupeKey = const Value.absent(),
+    this.ringSeq = const Value.absent(),
   });
   BloodOxygenDetailsCompanion.insert({
     this.id = const Value.absent(),
     required DateTime date,
     required int spo2,
+    this.source = const Value.absent(),
+    this.dedupeKey = const Value.absent(),
+    this.ringSeq = const Value.absent(),
   }) : date = Value(date),
        spo2 = Value(spo2);
   static Insertable<BloodOxygenDetail> custom({
     Expression<int>? id,
     Expression<DateTime>? date,
     Expression<int>? spo2,
+    Expression<String>? source,
+    Expression<String>? dedupeKey,
+    Expression<String>? ringSeq,
   }) {
     return RawValuesInsertable({
       if (id != null) 'id': id,
       if (date != null) 'date': date,
       if (spo2 != null) 'spo2': spo2,
+      if (source != null) 'source': source,
+      if (dedupeKey != null) 'dedupe_key': dedupeKey,
+      if (ringSeq != null) 'ring_seq': ringSeq,
     });
   }
 
@@ -1048,11 +1474,17 @@ class BloodOxygenDetailsCompanion extends UpdateCompanion<BloodOxygenDetail> {
     Value<int>? id,
     Value<DateTime>? date,
     Value<int>? spo2,
+    Value<String>? source,
+    Value<String?>? dedupeKey,
+    Value<String?>? ringSeq,
   }) {
     return BloodOxygenDetailsCompanion(
       id: id ?? this.id,
       date: date ?? this.date,
       spo2: spo2 ?? this.spo2,
+      source: source ?? this.source,
+      dedupeKey: dedupeKey ?? this.dedupeKey,
+      ringSeq: ringSeq ?? this.ringSeq,
     );
   }
 
@@ -1068,6 +1500,15 @@ class BloodOxygenDetailsCompanion extends UpdateCompanion<BloodOxygenDetail> {
     if (spo2.present) {
       map['spo2'] = Variable<int>(spo2.value);
     }
+    if (source.present) {
+      map['source'] = Variable<String>(source.value);
+    }
+    if (dedupeKey.present) {
+      map['dedupe_key'] = Variable<String>(dedupeKey.value);
+    }
+    if (ringSeq.present) {
+      map['ring_seq'] = Variable<String>(ringSeq.value);
+    }
     return map;
   }
 
@@ -1076,7 +1517,10 @@ class BloodOxygenDetailsCompanion extends UpdateCompanion<BloodOxygenDetail> {
     return (StringBuffer('BloodOxygenDetailsCompanion(')
           ..write('id: $id, ')
           ..write('date: $date, ')
-          ..write('spo2: $spo2')
+          ..write('spo2: $spo2, ')
+          ..write('source: $source, ')
+          ..write('dedupeKey: $dedupeKey, ')
+          ..write('ringSeq: $ringSeq')
           ..write(')'))
         .toString();
   }
@@ -2110,12 +2554,18 @@ typedef $$HeartDetailsTableCreateCompanionBuilder =
       Value<int> id,
       required DateTime date,
       required int bpm,
+      Value<String> source,
+      Value<String?> dedupeKey,
+      Value<String?> ringSeq,
     });
 typedef $$HeartDetailsTableUpdateCompanionBuilder =
     HeartDetailsCompanion Function({
       Value<int> id,
       Value<DateTime> date,
       Value<int> bpm,
+      Value<String> source,
+      Value<String?> dedupeKey,
+      Value<String?> ringSeq,
     });
 
 class $$HeartDetailsTableFilterComposer
@@ -2139,6 +2589,21 @@ class $$HeartDetailsTableFilterComposer
 
   ColumnFilters<int> get bpm => $composableBuilder(
     column: $table.bpm,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get source => $composableBuilder(
+    column: $table.source,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get dedupeKey => $composableBuilder(
+    column: $table.dedupeKey,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get ringSeq => $composableBuilder(
+    column: $table.ringSeq,
     builder: (column) => ColumnFilters(column),
   );
 }
@@ -2166,6 +2631,21 @@ class $$HeartDetailsTableOrderingComposer
     column: $table.bpm,
     builder: (column) => ColumnOrderings(column),
   );
+
+  ColumnOrderings<String> get source => $composableBuilder(
+    column: $table.source,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get dedupeKey => $composableBuilder(
+    column: $table.dedupeKey,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get ringSeq => $composableBuilder(
+    column: $table.ringSeq,
+    builder: (column) => ColumnOrderings(column),
+  );
 }
 
 class $$HeartDetailsTableAnnotationComposer
@@ -2185,6 +2665,15 @@ class $$HeartDetailsTableAnnotationComposer
 
   GeneratedColumn<int> get bpm =>
       $composableBuilder(column: $table.bpm, builder: (column) => column);
+
+  GeneratedColumn<String> get source =>
+      $composableBuilder(column: $table.source, builder: (column) => column);
+
+  GeneratedColumn<String> get dedupeKey =>
+      $composableBuilder(column: $table.dedupeKey, builder: (column) => column);
+
+  GeneratedColumn<String> get ringSeq =>
+      $composableBuilder(column: $table.ringSeq, builder: (column) => column);
 }
 
 class $$HeartDetailsTableTableManager
@@ -2221,13 +2710,33 @@ class $$HeartDetailsTableTableManager
                 Value<int> id = const Value.absent(),
                 Value<DateTime> date = const Value.absent(),
                 Value<int> bpm = const Value.absent(),
-              }) => HeartDetailsCompanion(id: id, date: date, bpm: bpm),
+                Value<String> source = const Value.absent(),
+                Value<String?> dedupeKey = const Value.absent(),
+                Value<String?> ringSeq = const Value.absent(),
+              }) => HeartDetailsCompanion(
+                id: id,
+                date: date,
+                bpm: bpm,
+                source: source,
+                dedupeKey: dedupeKey,
+                ringSeq: ringSeq,
+              ),
           createCompanionCallback:
               ({
                 Value<int> id = const Value.absent(),
                 required DateTime date,
                 required int bpm,
-              }) => HeartDetailsCompanion.insert(id: id, date: date, bpm: bpm),
+                Value<String> source = const Value.absent(),
+                Value<String?> dedupeKey = const Value.absent(),
+                Value<String?> ringSeq = const Value.absent(),
+              }) => HeartDetailsCompanion.insert(
+                id: id,
+                date: date,
+                bpm: bpm,
+                source: source,
+                dedupeKey: dedupeKey,
+                ringSeq: ringSeq,
+              ),
           withReferenceMapper: (p0) => p0
               .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
               .toList(),
@@ -2258,12 +2767,18 @@ typedef $$StressDetailsTableCreateCompanionBuilder =
       Value<int> id,
       required DateTime date,
       required int stress,
+      Value<String> source,
+      Value<String?> dedupeKey,
+      Value<String?> ringSeq,
     });
 typedef $$StressDetailsTableUpdateCompanionBuilder =
     StressDetailsCompanion Function({
       Value<int> id,
       Value<DateTime> date,
       Value<int> stress,
+      Value<String> source,
+      Value<String?> dedupeKey,
+      Value<String?> ringSeq,
     });
 
 class $$StressDetailsTableFilterComposer
@@ -2287,6 +2802,21 @@ class $$StressDetailsTableFilterComposer
 
   ColumnFilters<int> get stress => $composableBuilder(
     column: $table.stress,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get source => $composableBuilder(
+    column: $table.source,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get dedupeKey => $composableBuilder(
+    column: $table.dedupeKey,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get ringSeq => $composableBuilder(
+    column: $table.ringSeq,
     builder: (column) => ColumnFilters(column),
   );
 }
@@ -2314,6 +2844,21 @@ class $$StressDetailsTableOrderingComposer
     column: $table.stress,
     builder: (column) => ColumnOrderings(column),
   );
+
+  ColumnOrderings<String> get source => $composableBuilder(
+    column: $table.source,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get dedupeKey => $composableBuilder(
+    column: $table.dedupeKey,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get ringSeq => $composableBuilder(
+    column: $table.ringSeq,
+    builder: (column) => ColumnOrderings(column),
+  );
 }
 
 class $$StressDetailsTableAnnotationComposer
@@ -2333,6 +2878,15 @@ class $$StressDetailsTableAnnotationComposer
 
   GeneratedColumn<int> get stress =>
       $composableBuilder(column: $table.stress, builder: (column) => column);
+
+  GeneratedColumn<String> get source =>
+      $composableBuilder(column: $table.source, builder: (column) => column);
+
+  GeneratedColumn<String> get dedupeKey =>
+      $composableBuilder(column: $table.dedupeKey, builder: (column) => column);
+
+  GeneratedColumn<String> get ringSeq =>
+      $composableBuilder(column: $table.ringSeq, builder: (column) => column);
 }
 
 class $$StressDetailsTableTableManager
@@ -2369,16 +2923,32 @@ class $$StressDetailsTableTableManager
                 Value<int> id = const Value.absent(),
                 Value<DateTime> date = const Value.absent(),
                 Value<int> stress = const Value.absent(),
-              }) => StressDetailsCompanion(id: id, date: date, stress: stress),
+                Value<String> source = const Value.absent(),
+                Value<String?> dedupeKey = const Value.absent(),
+                Value<String?> ringSeq = const Value.absent(),
+              }) => StressDetailsCompanion(
+                id: id,
+                date: date,
+                stress: stress,
+                source: source,
+                dedupeKey: dedupeKey,
+                ringSeq: ringSeq,
+              ),
           createCompanionCallback:
               ({
                 Value<int> id = const Value.absent(),
                 required DateTime date,
                 required int stress,
+                Value<String> source = const Value.absent(),
+                Value<String?> dedupeKey = const Value.absent(),
+                Value<String?> ringSeq = const Value.absent(),
               }) => StressDetailsCompanion.insert(
                 id: id,
                 date: date,
                 stress: stress,
+                source: source,
+                dedupeKey: dedupeKey,
+                ringSeq: ringSeq,
               ),
           withReferenceMapper: (p0) => p0
               .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
@@ -2410,12 +2980,18 @@ typedef $$BloodOxygenDetailsTableCreateCompanionBuilder =
       Value<int> id,
       required DateTime date,
       required int spo2,
+      Value<String> source,
+      Value<String?> dedupeKey,
+      Value<String?> ringSeq,
     });
 typedef $$BloodOxygenDetailsTableUpdateCompanionBuilder =
     BloodOxygenDetailsCompanion Function({
       Value<int> id,
       Value<DateTime> date,
       Value<int> spo2,
+      Value<String> source,
+      Value<String?> dedupeKey,
+      Value<String?> ringSeq,
     });
 
 class $$BloodOxygenDetailsTableFilterComposer
@@ -2439,6 +3015,21 @@ class $$BloodOxygenDetailsTableFilterComposer
 
   ColumnFilters<int> get spo2 => $composableBuilder(
     column: $table.spo2,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get source => $composableBuilder(
+    column: $table.source,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get dedupeKey => $composableBuilder(
+    column: $table.dedupeKey,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get ringSeq => $composableBuilder(
+    column: $table.ringSeq,
     builder: (column) => ColumnFilters(column),
   );
 }
@@ -2466,6 +3057,21 @@ class $$BloodOxygenDetailsTableOrderingComposer
     column: $table.spo2,
     builder: (column) => ColumnOrderings(column),
   );
+
+  ColumnOrderings<String> get source => $composableBuilder(
+    column: $table.source,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get dedupeKey => $composableBuilder(
+    column: $table.dedupeKey,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get ringSeq => $composableBuilder(
+    column: $table.ringSeq,
+    builder: (column) => ColumnOrderings(column),
+  );
 }
 
 class $$BloodOxygenDetailsTableAnnotationComposer
@@ -2485,6 +3091,15 @@ class $$BloodOxygenDetailsTableAnnotationComposer
 
   GeneratedColumn<int> get spo2 =>
       $composableBuilder(column: $table.spo2, builder: (column) => column);
+
+  GeneratedColumn<String> get source =>
+      $composableBuilder(column: $table.source, builder: (column) => column);
+
+  GeneratedColumn<String> get dedupeKey =>
+      $composableBuilder(column: $table.dedupeKey, builder: (column) => column);
+
+  GeneratedColumn<String> get ringSeq =>
+      $composableBuilder(column: $table.ringSeq, builder: (column) => column);
 }
 
 class $$BloodOxygenDetailsTableTableManager
@@ -2530,16 +3145,32 @@ class $$BloodOxygenDetailsTableTableManager
                 Value<int> id = const Value.absent(),
                 Value<DateTime> date = const Value.absent(),
                 Value<int> spo2 = const Value.absent(),
-              }) => BloodOxygenDetailsCompanion(id: id, date: date, spo2: spo2),
+                Value<String> source = const Value.absent(),
+                Value<String?> dedupeKey = const Value.absent(),
+                Value<String?> ringSeq = const Value.absent(),
+              }) => BloodOxygenDetailsCompanion(
+                id: id,
+                date: date,
+                spo2: spo2,
+                source: source,
+                dedupeKey: dedupeKey,
+                ringSeq: ringSeq,
+              ),
           createCompanionCallback:
               ({
                 Value<int> id = const Value.absent(),
                 required DateTime date,
                 required int spo2,
+                Value<String> source = const Value.absent(),
+                Value<String?> dedupeKey = const Value.absent(),
+                Value<String?> ringSeq = const Value.absent(),
               }) => BloodOxygenDetailsCompanion.insert(
                 id: id,
                 date: date,
                 spo2: spo2,
+                source: source,
+                dedupeKey: dedupeKey,
+                ringSeq: ringSeq,
               ),
           withReferenceMapper: (p0) => p0
               .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
