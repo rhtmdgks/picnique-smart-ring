@@ -72,13 +72,14 @@ class HealthSleepTimelineChart extends StatelessWidget {
 
     return Semantics(
       label: 'Sleep timeline chart',
-      child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        SizedBox(
-          height: HealthChartTheme.chartHeight,
-          child: LineChart(
-            LineChartData(
+      child: SizedBox(
+        height: HealthChartTheme.chartHeight,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: LineChart(
+                LineChartData(
               minX: minX - pad,
               maxX: maxX + pad,
               minY: 0.5,
@@ -154,18 +155,21 @@ class HealthSleepTimelineChart extends StatelessWidget {
               ),
               lineBarsData: bars,
             ),
-            duration: HealthChartTheme.animationDuration,
-          ),
+                duration: HealthChartTheme.animationDuration,
+              ),
+            ),
+            const SizedBox(height: 8),
+            const _SleepLegend(),
+          ],
         ),
-        const SizedBox(height: 8),
-        _SleepLegend(),
-      ],
       ),
     );
   }
 }
 
 class _SleepLegend extends StatelessWidget {
+  const _SleepLegend();
+
   @override
   Widget build(BuildContext context) {
     final items = [
