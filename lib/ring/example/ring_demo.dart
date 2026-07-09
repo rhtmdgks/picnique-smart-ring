@@ -33,7 +33,8 @@ class _RingDemoScreenState extends State<RingDemoScreen> {
     }
     await RingRepository.stopScan();
     _results = [];
-    final sub = RingRepository.scan().listen((r) {
+    final results = await RingRepository.scan();
+    final sub = results.listen((r) {
       setState(() {
         _results = r.where(RingRepository.isYawellRingDevice).toList();
       });

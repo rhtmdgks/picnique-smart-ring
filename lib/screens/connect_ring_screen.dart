@@ -71,9 +71,11 @@ class _ConnectRingSettingScreenState extends State<ConnectRingSettingScreen> {
   Future<void> _boot() async {
     final ok = await ensureBluetoothOn(context);
     if (!ok && mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('블루투스를 켠 후 다시 시도해 주세요.')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('블루투스·근처 기기 권한을 허용한 뒤 다시 시도해 주세요.'),
+        ),
+      );
       return;
     }
     if (!mounted) return;
@@ -106,7 +108,11 @@ class _ConnectRingSettingScreenState extends State<ConnectRingSettingScreen> {
     _injectCachedDevice();
     await RingRepository.stopScan();
     await _scanSub?.cancel();
-    _scanSub = RingRepository.scan(timeout: const Duration(seconds: 10)).listen(
+    try {
+      final results = await RingRepository.scan(
+        timeout: const Duration(seconds: 10),
+      );
+      _scanSub = results.listen(
       (list) {
         if (!mounted) return;
         final Map<String, ScanResult> dedup = {};
@@ -135,6 +141,21 @@ class _ConnectRingSettingScreenState extends State<ConnectRingSettingScreen> {
         });
       },
     );
+    } catch (e) {
+      debugPrint('[SCAN] startScan failed: $e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            e.toString().toLowerCase().contains('location')
+                ? '위치 서비스를 켜고 권한을 허용한 뒤 다시 시도해 주세요.'
+                : '블루투스 탐색을 시작하지 못했어요. 권한 설정을 확인해 주세요.',
+          ),
+        ),
+      );
+      _finishScan();
+      return;
+    }
 
     await Future<void>.delayed(const Duration(seconds: 10));
     await _stopScanOnly();
@@ -236,9 +257,18 @@ class _ConnectRingSettingScreenState extends State<ConnectRingSettingScreen> {
         setState(() => _connectingDeviceName = deviceName);
       }
 
+      BluetoothDevice? scannedDevice;
+      for (final r in _scanResults) {
+        if (_deviceAddress(r.device) == address) {
+          scannedDevice = r.device;
+          break;
+        }
+      }
+
       final ok = await RingConnectionService.connect(
         address: address,
         deviceName: deviceName,
+        device: scannedDevice,
         ring: ring,
         liveActivity: liveActivity,
         sync: sync,

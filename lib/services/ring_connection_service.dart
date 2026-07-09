@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/ring.dart';
 import 'package:picnique_rosary_healthcare_smartring/ring/repository/ring_repository.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/battery_notification_service.dart';
@@ -61,6 +62,7 @@ class RingConnectionService {
     required String deviceName,
     required Ring ring,
     required RingLiveActivity liveActivity,
+    BluetoothDevice? device,
     RingSyncController? sync,
     bool runBackgroundSync = true,
     bool clearPersistOnFailure = false,
@@ -74,9 +76,15 @@ class RingConnectionService {
         return false;
       }
 
-      debugPrint('[CONNECT] connectByAddress begin ($address)');
-      final ok = await _repo.connectByAddress(address)
-          .timeout(const Duration(seconds: 60));
+      if (device != null) {
+        debugPrint('[CONNECT] connect device begin (${device.remoteId.str})');
+      } else {
+        debugPrint('[CONNECT] connectByAddress begin ($address)');
+      }
+      final ok = device != null
+          ? await _repo.connect(device).timeout(const Duration(seconds: 60))
+          : await _repo.connectByAddress(address)
+              .timeout(const Duration(seconds: 60));
       if (!ok) {
         await _cleanupFailedConnect(ring, clearPersistOnFailure);
         return false;

@@ -18,6 +18,7 @@ import 'package:picnique_rosary_healthcare_smartring/core/constants/ring_measure
 import 'package:picnique_rosary_healthcare_smartring/services/ble_command_queue.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_monitoring_status.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_session_arbiter.dart';
+import 'package:picnique_rosary_healthcare_smartring/ring/transport/ring_permissions.dart';
 
 import '../db/app_db.dart';
 
@@ -35,7 +36,9 @@ Future<bool> ensureBluetoothOn(
     return _ensureBluetoothOnIos(context, timeout: timeout);
   }
 
-  // Android: FlutterBluePlus로 어댑터 상태 확인
+  // Android: runtime BT permissions → adapter on
+  if (!await RingPermissions.ensurePermissions()) return false;
+
   final initial = await FlutterBluePlus.adapterState.first;
   if (initial == BluetoothAdapterState.on) return true;
 

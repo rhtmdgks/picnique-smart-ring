@@ -87,10 +87,12 @@ class RingRepository {
   Timer? _reconnectTimer;
   String? _savedAddress;
   bool _manualDisconnect = false;
+  bool _connectInFlight = false;
+  Future<bool>? _connectFuture;
 
-  static Stream<List<ScanResult>> scan({
+  static Future<Stream<List<ScanResult>>> scan({
     Duration timeout = const Duration(seconds: 8),
-  }) =>
+  }) async =>
       RingTransport.scan(timeout: timeout);
 
   static Future<void> stopScan() => RingTransport.stopScan();
@@ -106,25 +108,56 @@ class RingRepository {
   Future<bool> connect(BluetoothDevice device) async {
     _manualDisconnect = false;
     _savedAddress = device.remoteId.str;
-    final ok = await _connectInternal(device);
-    if (ok) _reconnectAttempt = 0;
-    return ok;
+    return _runConnectExclusive(
+      () => _connectInternal(device, autoConnect: false),
+    );
   }
 
   Future<bool> connectByAddress(String address) async {
     _manualDisconnect = false;
     _savedAddress = address;
-    final dev = BluetoothDevice.fromId(address);
-    return _connectInternal(dev);
+    return _runConnectExclusive(() async {
+      final dev = BluetoothDevice.fromId(address);
+      return _connectInternal(dev, autoConnect: Platform.isAndroid);
+    });
   }
 
-  Future<bool> _connectInternal(BluetoothDevice device) async {
+  Future<bool> _runConnectExclusive(Future<bool> Function() action) async {
+    if (_connectFuture != null) {
+      debugPrint('[RING] connect coalesced — await in-flight attempt');
+      return _connectFuture!;
+    }
+    final future = action();
+    _connectFuture = future;
+    try {
+      final ok = await future;
+      if (ok) _reconnectAttempt = 0;
+      return ok;
+    } finally {
+      if (identical(_connectFuture, future)) {
+        _connectFuture = null;
+      }
+    }
+  }
+
+  Future<bool> _connectInternal(
+    BluetoothDevice device, {
+    required bool autoConnect,
+  }) async {
     if (!await ensurePermissions()) return false;
+
+    _connectInFlight = true;
+    _reconnectTimer?.cancel();
 
     _queue.startListening();
     _bindNotificationRouter();
 
-    final ok = await _transport.connect(device);
+    bool ok = false;
+    try {
+      ok = await _transport.connect(device, autoConnect: autoConnect);
+    } finally {
+      _connectInFlight = false;
+    }
     if (!ok) return false;
 
     debugPrint(
@@ -173,7 +206,9 @@ class RingRepository {
     _connSub = _transport.connectionState.listen((connected) {
       if (!connected) {
         _disconnectController.add(null);
-        if (!_manualDisconnect && _savedAddress != null) {
+        if (!_manualDisconnect &&
+            _savedAddress != null &&
+            !_connectInFlight) {
           _scheduleReconnect();
         }
       }

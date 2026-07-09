@@ -133,7 +133,9 @@ Future<void> _ensureBatteryOptExclusion() async {
   const channel = MethodChannel('com.example.picnique_ring/ble');
   try {
     await channel.invokeMethod<bool>('ensureIgnoreBatteryOptimizations');
+  } on MissingPluginException {
+    debugPrint('[RING] battery opt not implemented on Android yet');
   } catch (e) {
-    debugPrint('battery opt check failed: $e');
+    debugPrint('[RING] battery opt check failed: $e');
   }
 }

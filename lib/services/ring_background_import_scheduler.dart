@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -48,9 +49,10 @@ class RingBackgroundImportScheduler {
 
   void onRingStateChanged() => _syncTimer();
 
-  /// 네이티브 백그라운드 수집 완료 알림 → 즉시 DB 병합.
+  /// 네이티브 백그라운드 수집 완료 알림 → 즉시 DB 병합 (iOS only).
   void _ensureHealthDataListener() {
     if (_healthSubscription != null) return;
+    if (!Platform.isIOS) return;
     _healthSubscription = _healthEvents.receiveBroadcastStream().listen(
       (event) {
         if (event is! Map) return;

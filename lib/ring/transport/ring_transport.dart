@@ -3,6 +3,7 @@
 // Big-data: separate service de5bf728 (NOT 6e40fff0) — QRing btsnoop handle 0x0016/0x0018
 
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
@@ -56,11 +57,15 @@ class RingTransport {
     if (pending != null) await pending.future;
   }
 
-  static Stream<List<ScanResult>> scan({
+  static Future<Stream<List<ScanResult>>> scan({
     Duration timeout = const Duration(seconds: 8),
-  }) {
+  }) async {
     // No withServices — R08 advertises fee7 only; 6e40/de5bf appear after connect.
-    FlutterBluePlus.startScan(timeout: timeout);
+    await FlutterBluePlus.startScan(
+      timeout: timeout,
+      androidUsesFineLocation: false,
+      androidCheckLocationServices: false,
+    );
     return FlutterBluePlus.scanResults;
   }
 
@@ -69,12 +74,22 @@ class RingTransport {
   static bool isYawellRingAdvertisement(ScanResult result) =>
       RingDeviceMatcher.isYawellRing(result);
 
-  Future<bool> connect(BluetoothDevice device) async {
-    await disconnect();
+  Future<bool> connect(BluetoothDevice device, {bool autoConnect = false}) async {
+    final sameDevice = _device?.remoteId == device.remoteId;
+    if (sameDevice && device.isConnected && _discoveryComplete) {
+      return true;
+    }
+
+    // Only tear down when switching devices or replacing a live session.
+    if (!sameDevice || (_device?.isConnected ?? false)) {
+      await disconnect();
+    }
+
     _device = device;
     _discoveryComplete = false;
     _discoveryReady = Completer<void>();
 
+    _connSub?.cancel();
     _connSub = device.connectionState.listen((state) {
       final connected = state == BluetoothConnectionState.connected;
       _connectionController.add(connected);
@@ -85,7 +100,15 @@ class RingTransport {
     });
 
     try {
-      await device.connect(autoConnect: false, mtu: null);
+      if (!device.isConnected) {
+        await device.connect(autoConnect: autoConnect, mtu: null);
+        if (autoConnect) {
+          // autoConnect returns before link is up — wait on state stream.
+          await device.connectionState
+              .firstWhere((s) => s == BluetoothConnectionState.connected)
+              .timeout(const Duration(seconds: 30));
+        }
+      }
     } catch (e) {
       debugPrint('[RING] connect error: $e');
       _completeDiscovery();
@@ -114,7 +137,8 @@ class RingTransport {
 
   Future<bool> connectByAddress(String address) async {
     final dev = BluetoothDevice.fromId(address);
-    return connect(dev);
+    // Android random MAC: fromId defaults public → 147 timeout. autoConnect lets stack resolve type.
+    return connect(dev, autoConnect: Platform.isAndroid);
   }
 
   Future<bool> _discoverServices() async {

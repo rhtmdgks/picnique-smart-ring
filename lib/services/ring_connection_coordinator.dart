@@ -43,6 +43,7 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
   Timer? _reconnectTimer;
   bool _started = false;
   bool _isReconnecting = false;
+  Future<void>? _reconnectFuture;
   bool _manualDisconnectRequested = false;
   bool _postConnectInFlight = false;
   int _backoffIndex = 0;
@@ -199,6 +200,22 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
 
   Future<void> _tryReconnect({required String trigger}) async {
     final ring = _ring;
+    if (ring == null || _manualDisconnectRequested) return;
+    if (_reconnectFuture != null) {
+      debugPrint('[BLE][coordinator] reconnect coalesced($trigger)');
+      await _reconnectFuture;
+      return;
+    }
+    _reconnectFuture = _tryReconnectOnce(trigger: trigger);
+    try {
+      await _reconnectFuture;
+    } finally {
+      _reconnectFuture = null;
+    }
+  }
+
+  Future<void> _tryReconnectOnce({required String trigger}) async {
+    final ring = _ring;
     if (ring == null || _isReconnecting || _manualDisconnectRequested) return;
     final address = ring.savedAddress;
     if (address == null || address.isEmpty) {
@@ -237,6 +254,7 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
       final name = ring.savedName ?? '스마트링';
       await ring.markConnected(name: name, address: address);
       _backoffIndex = 0;
+      _reconnectTimer?.cancel();
 
       await _readBattery(ring);
       await _runAfterConnectSuccess(address, name);
@@ -390,12 +408,14 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
   }
 
   Future<bool> _connectAndVerify(String address) async {
+    // Android autoConnect can take tens of seconds — do not retry until wait ends.
+    const connectTimeout = Duration(seconds: 35);
     try {
       final ok = await BleCommandQueue
           .invoke<bool>('reconnectKnownDevice', <String, dynamic>{
             'deviceAddress': address,
           })
-          .timeout(const Duration(seconds: 20));
+          .timeout(connectTimeout);
       if (ok == true) return true;
     } catch (_) {}
 
@@ -404,7 +424,7 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
           .invoke<bool>('connectDirectly', <String, dynamic>{
             'deviceAddress': address,
           })
-          .timeout(const Duration(seconds: 30));
+          .timeout(connectTimeout);
       return ok == true;
     } catch (_) {
       return false;

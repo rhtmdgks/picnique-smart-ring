@@ -6,19 +6,25 @@ import 'package:permission_handler/permission_handler.dart';
 
 /// Android/iOS Bluetooth permission helpers for flutter_blue_plus.
 abstract final class RingPermissions {
-  static Future<bool> ensureReady() async {
-    if (Platform.isAndroid) {
-      final statuses = await [
-        Permission.bluetoothScan,
-        Permission.bluetoothConnect,
-        Permission.locationWhenInUse,
-      ].request();
-      final denied = statuses.values.any((s) => s.isDenied || s.isPermanentlyDenied);
-      if (denied) {
-        debugPrint('[RING] BT permissions denied');
+  /// Android 12+: BLUETOOTH_SCAN + BLUETOOTH_CONNECT only (neverForLocation manifest).
+  static Future<bool> ensurePermissions() async {
+    if (!Platform.isAndroid) return true;
+
+    final statuses = await [
+      Permission.bluetoothScan,
+      Permission.bluetoothConnect,
+    ].request();
+    for (final entry in statuses.entries) {
+      if (entry.value.isDenied || entry.value.isPermanentlyDenied) {
+        debugPrint('[RING] BT permission denied: ${entry.key} → ${entry.value}');
         return false;
       }
     }
+    return true;
+  }
+
+  static Future<bool> ensureReady() async {
+    if (!await ensurePermissions()) return false;
     return isAdapterOn();
   }
 
