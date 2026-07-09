@@ -2,10 +2,13 @@ import 'dart:async';
 
 import 'package:drift/drift.dart';
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/constants/ring_measurement_policy.dart';
 import 'package:picnique_rosary_healthcare_smartring/db/app_db.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/db/db_manager.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ble_command_queue.dart';
+import 'package:picnique_rosary_healthcare_smartring/ring/repository/ring_repository.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/ring_session_arbiter.dart';
 
 /// 이벤트 기반 수면 sync — 주기 폴링 대신 다음 시점에만 pull 한다:
 ///
@@ -34,6 +37,21 @@ class RingSleepSyncService {
   Future<void> syncSummary({int days = 3}) async {
     if (_syncing) {
       debugPrint('[SLEEP_SYNC] skipped — already syncing');
+      return;
+    }
+    if (!await _hasPairedRing()) return;
+    if (!RingRepository.instance.isConnected ||
+        !RingRepository.instance.isDiscoveryComplete) {
+      debugPrint('[SLEEP_SYNC] skipped — ring not connected / GATT not ready');
+      return;
+    }
+    if (!RingRepository.instance.hasBigDataChannel) {
+      debugPrint('[SLEEP_SYNC] skipped — big-data channel (de5bf728) missing');
+      return;
+    }
+    // 수동 측정·묵주 터치 세션 중엔 시작하지 않는다 — 세션 종료 대기 후 진행.
+    if (!await RingSessionArbiter.instance.waitUntilBackground()) {
+      debugPrint('[SLEEP_SYNC] skipped — ring session busy');
       return;
     }
     _syncing = true;
@@ -74,6 +92,13 @@ class RingSleepSyncService {
     final last = _lastSummaryAt;
     if (last != null && last.isAfter(morning)) return;
     await syncSummary();
+  }
+
+  static Future<bool> _hasPairedRing() async {
+    final prefs = await SharedPreferences.getInstance();
+    final addr =
+        prefs.getString('ring.saved_address') ?? prefs.getString('ring_address');
+    return addr != null && addr.trim().isNotEmpty;
   }
 
   /// 신 프로토콜: `{st, et, list:[{d, t}]}` (t: 2=light, 3=deep, 4=rem, 5=awake).

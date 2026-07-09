@@ -1,25 +1,20 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart';
+import 'package:picnique_rosary_healthcare_smartring/ring/repository/ring_repository.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ble_command_queue.dart';
-import 'package:picnique_rosary_healthcare_smartring/util/BLEUtil.dart';
 
-/// 반지에서 오늘 활동(걸음/칼로리/거리)을 실시간으로 받아 UI에 반영한다.
-///
-/// - Android: BLE 실시간 이벤트(`rtSportSummary`) + 주기적 `syncTodaySport` 폴링
-/// - iOS: SDK `currentStepInfo` 콜백 + 주기적 `syncTodaySport` 폴링
+/// Today activity from Colmi 0x73/0x12 push + periodic history poll.
 class RingLiveActivity with ChangeNotifier {
-  static const EventChannel _events = EventChannel(
-    'com.example.picnique_ring/ble_events',
-  );
+  final RingRepository _repo = RingRepository.instance;
 
   int _steps = 0;
   int _calories = 0;
   int _distanceM = 0;
   bool _tracking = false;
 
-  StreamSubscription<dynamic>? _subscription;
+  StreamSubscription<LiveActivitySnapshot>? _liveSub;
+  StreamSubscription<void>? _disconnectSub;
   Timer? _pollTimer;
 
   int get steps => _steps;
@@ -28,20 +23,10 @@ class RingLiveActivity with ChangeNotifier {
   bool get isTracking => _tracking;
 
   Future<void> start() async {
-    if (_subscription != null) return;
+    if (_liveSub != null) return;
 
-    try {
-      await BleCommandQueue.invoke<void>('enableRealtimeNotifications');
-    } catch (e) {
-      debugPrint('[LIVE_ACTIVITY] enableRealtime failed: $e');
-    }
-
-    _subscription = _events.receiveBroadcastStream().listen(
-      _onEvent,
-      onError: (error) {
-        debugPrint('[LIVE_ACTIVITY] event error: $error');
-      },
-    );
+    _liveSub = _repo.liveActivityUpdates.listen(_applySnapshot);
+    _disconnectSub = _repo.disconnectEvents.listen((_) => unawaited(stop()));
 
     _pollTimer ??= Timer.periodic(
       const Duration(seconds: 8),
@@ -52,14 +37,12 @@ class RingLiveActivity with ChangeNotifier {
   }
 
   Future<void> stop() async {
-    await _subscription?.cancel();
-    _subscription = null;
+    await _liveSub?.cancel();
+    await _disconnectSub?.cancel();
+    _liveSub = null;
+    _disconnectSub = null;
     _pollTimer?.cancel();
     _pollTimer = null;
-
-    try {
-      await BleCommandQueue.invoke<void>('disableRealtimeNotifications');
-    } catch (_) {}
 
     _steps = 0;
     _calories = 0;
@@ -69,31 +52,23 @@ class RingLiveActivity with ChangeNotifier {
   }
 
   Future<void> refresh() async {
-    final data = await fetchTodaySportFromRing(BleCommandQueue.channel);
+    final data = await BleCommandQueue.invoke<Map<dynamic, dynamic>>(
+      'syncTodaySport',
+    );
     if (data == null) return;
-
     _apply(
-      steps: data['totalSteps'] ?? 0,
-      calories: data['calorie'] ?? 0,
-      distanceM: data['walkDistance'] ?? 0,
+      steps: _asInt(data['totalSteps']),
+      calories: _asInt(data['calorie']),
+      distanceM: _asInt(data['walkDistance']),
     );
   }
 
-  void _onEvent(dynamic event) {
-    if (event is! Map) return;
-
-    switch (event['type']) {
-      case 'rtSportSummary':
-        _apply(
-          steps: _asInt(event['steps']),
-          calories: _asInt(event['calorie']),
-          distanceM: _asInt(event['distance']),
-        );
-        break;
-      case 'disconnected':
-        unawaited(stop());
-        break;
-    }
+  void _applySnapshot(LiveActivitySnapshot snap) {
+    _apply(
+      steps: snap.steps,
+      calories: snap.calories,
+      distanceM: snap.distanceMeters,
+    );
   }
 
   void _apply({

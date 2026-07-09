@@ -19,6 +19,8 @@ import 'package:picnique_rosary_healthcare_smartring/services/ring_health_accumu
 import 'package:picnique_rosary_healthcare_smartring/services/ring_pending_import.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_sleep_gate.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_sleep_sync_service.dart';
+import 'package:picnique_rosary_healthcare_smartring/ring/commands/battery_command.dart';
+import 'package:picnique_rosary_healthcare_smartring/ring/repository/ring_repository.dart';
 import 'package:picnique_rosary_healthcare_smartring/util/BLEUtil.dart';
 
 /// BLE 연결 유지·자동 재연결·충전/배터리 이벤트를 중앙에서 처리한다.
@@ -30,16 +32,14 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
   static const MethodChannel _fg = MethodChannel(
     'com.example.picnique_ring/foreground_service_channel',
   );
-  static const EventChannel _events = EventChannel(
-    'com.example.picnique_ring/ble_events',
-  );
 
   static const _backoffMs = <int>[500, 2000, 5000, 15000, 30000];
 
   Ring? _ring;
   RingLiveActivity? _liveActivity;
   RingSyncController? _sync;
-  StreamSubscription<dynamic>? _eventSub;
+  StreamSubscription<BatteryStatus>? _batterySub;
+  StreamSubscription<void>? _disconnectSub;
   Timer? _reconnectTimer;
   bool _started = false;
   bool _isReconnecting = false;
@@ -80,11 +80,14 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
       await BatteryNotificationService.ensureReadyForBackgroundAlerts();
     }
     ring.addListener(_onRingProviderChanged);
-    _eventSub = _events.receiveBroadcastStream().listen(
-      _onEvent,
-      onError: (Object err) =>
-          debugPrint('[BLE][coordinator] event error: $err'),
-    );
+    _batterySub = RingRepository.instance.batteryUpdates.listen((b) {
+      final ring = _ring;
+      if (ring == null) return;
+      ring.setBatteryAndCharging(b.level, b.charging, fromRealtime: true);
+    });
+    _disconnectSub = RingRepository.instance.disconnectEvents.listen((_) {
+      _handleDisconnected();
+    });
     await RingPendingImport.importAll(
       ring: _ring,
       refreshNotifier: _healthRefresh,
@@ -100,8 +103,10 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
     RingAutoMeasurementService.instance.unbind();
     RingSleepGate.instance.unbind();
     WidgetsBinding.instance.removeObserver(this);
-    await _eventSub?.cancel();
-    _eventSub = null;
+    await _batterySub?.cancel();
+    await _disconnectSub?.cancel();
+    _batterySub = null;
+    _disconnectSub = null;
     _started = false;
   }
 
@@ -123,12 +128,8 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      // 아침 foreground 복귀 — 수면 중이었다면 기상 처리(내부에서 시간대 판정).
       RingSleepGate.instance.onAppResumed();
-      // 마지막 수면 sync 가 오늘 아침 이전이면 요약 sync.
-      unawaited(RingSleepSyncService.instance.syncSummaryIfMorningStale());
-      unawaited(_flushHealthIfConnected());
-      unawaited(_tryReconnect(trigger: 'resume'));
+      unawaited(_onAppResumed());
     } else if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive) {
       unawaited(RingPendingImport.importAll(
@@ -136,6 +137,12 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
         refreshNotifier: _healthRefresh,
       ));
     }
+  }
+
+  Future<void> _onAppResumed() async {
+    await _tryReconnect(trigger: 'resume');
+    await _flushHealthIfConnected();
+    await RingSleepSyncService.instance.syncSummaryIfMorningStale();
   }
 
   Future<void> _flushHealthIfConnected() async {
@@ -163,42 +170,6 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
     ));
   }
 
-  void _onEvent(dynamic event) {
-    if (event is! Map) return;
-    final type = event['type']?.toString();
-
-    switch (type) {
-      case 'connected':
-        _handleConnected(event);
-      case 'disconnected':
-        _handleDisconnected();
-      case 'rtCharging':
-        _handleBatteryEvent(event, charging: true);
-      case 'rtBattery':
-        _handleBatteryEvent(
-          event,
-          charging: event['isCharging'] == true,
-        );
-    }
-  }
-
-  void _handleConnected(Map<dynamic, dynamic> event) {
-    final ring = _ring;
-    if (ring == null) return;
-    final address = (event['address']?.toString() ?? '').trim();
-    final name = (event['name']?.toString() ?? '').trim();
-    final safeAddress =
-        address.isNotEmpty ? address : (ring.savedAddress ?? '');
-    if (safeAddress.isEmpty) return;
-    final safeName = name.isNotEmpty ? name : (ring.savedName ?? '스마트링');
-    _backoffIndex = 0;
-    _reconnectTimer?.cancel();
-    _reconnectTimer = null;
-    unawaited(ring.markConnected(name: safeName, address: safeAddress));
-    if (_isReconnecting || RingConnectionService.isConnecting) return;
-    unawaited(_runAfterConnectSuccess(safeAddress, safeName));
-  }
-
   void _handleDisconnected() {
     final ring = _ring;
     if (ring == null) return;
@@ -209,17 +180,6 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
       return;
     }
     _scheduleReconnect(trigger: 'disconnected');
-  }
-
-  void _handleBatteryEvent(Map<dynamic, dynamic> event, {required bool charging}) {
-    final ring = _ring;
-    if (ring == null) return;
-    final percent = _asInt(event['percent']);
-    if (percent > 0) {
-      ring.setBatteryAndCharging(percent, charging);
-    } else {
-      ring.setCharging(charging);
-    }
   }
 
   void _scheduleReconnect({required String trigger}) {
@@ -241,7 +201,10 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
     final ring = _ring;
     if (ring == null || _isReconnecting || _manualDisconnectRequested) return;
     final address = ring.savedAddress;
-    if (address == null || address.isEmpty) return;
+    if (address == null || address.isEmpty) {
+      debugPrint('[BLE][coordinator] skip reconnect($trigger): no saved address');
+      return;
+    }
     if (ring.isConnected) return;
 
     if (!Platform.isIOS) {
@@ -262,6 +225,7 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
 
     ring.setIsReconnecting(true);
     _isReconnecting = true;
+    debugPrint('[BLE][coordinator] reconnect begin($trigger) addr=$address');
     try {
       final ok = await _connectAndVerify(address);
       if (!ok) {
@@ -375,8 +339,12 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
       unawaited(sync.run(BleCommandQueue.channel));
     }
 
-    // 연결 직후 수면 요약 sync (이벤트 기반 — backgroundSync 우선순위).
-    unawaited(RingSleepSyncService.instance.syncSummary());
+    // 연결 직후 수면 요약 sync (big-data GATT 준비된 경우만).
+    if (RingRepository.instance.hasBigDataChannel) {
+      unawaited(RingSleepSyncService.instance.syncSummary());
+    } else {
+      debugPrint('[CONNECT] skip sleep sync — big-data channel missing');
+    }
   }
 
   Future<void> _readBattery(Ring ring) async {

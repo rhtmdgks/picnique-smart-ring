@@ -4,6 +4,9 @@ import Flutter
 import QCBandSDK
 import BackgroundTasks
 import UserNotifications
+import UIKit
+import AVFoundation
+import MediaPlayer
 
 // MARK: - Background prefs & pending queue
 
@@ -400,6 +403,13 @@ final class IosBleBridge: NSObject {
   private var healthEventSink: FlutterEventSink?
   private var touchEventSink: FlutterEventSink?
   private var rosaryTouchEnabled = false
+  private var takePictureObserver: NSObjectProtocol?
+  private var stopTakePictureObserver: NSObjectProtocol?
+  private var d2pObserver: NSObjectProtocol?
+  private var volumeObservation: NSKeyValueObservation?
+  private var hiddenVolumeView: MPVolumeView?
+  private var suppressVolumeEvents = false
+  private let volumeBaseline: Float = 0.5
   private let mainQueue = DispatchQueue.main
 
   private func invokeFlutterResult(_ result: @escaping FlutterResult, _ value: Any?) {
@@ -494,43 +504,224 @@ final class IosBleBridge: NSObject {
 
   private func emitRingTap() {
     mainQueue.async { [weak self] in
-      guard let self = self, self.rosaryTouchEnabled else { return }
+      guard let self = self else { return }
+      guard self.rosaryTouchEnabled else {
+        print("[ROSARY_TOUCH] tap dropped — touch disabled")
+        return
+      }
+      if self.touchEventSink == nil {
+        print("[ROSARY_TOUCH] tap arrived but no Flutter sink")
+        return
+      }
       self.touchEventSink?(["type": "ringTap"])
     }
   }
 
-  private func enableRosaryTouch(strength: Int, result: @escaping FlutterResult) {
+  private func installRosaryTouchHooks() {
     let manager = QCSDKManager.shareInstance()
     manager.takePicture = { [weak self] in
+      print("[ROSARY_TOUCH] takePicture fired")
       self?.emitRingTap()
     }
-    rosaryTouchEnabled = true
+    manager.stopTakePicture = { [weak self] in
+      print("[ROSARY_TOUCH] stopTakePicture fired")
+      self?.emitRingTap()
+    }
+    manager.switchToPicture = {
+      // 카메라 모드 진입 알림 — 탭 아님. 세션 시작 직후 유령 카운트 방지.
+      print("[ROSARY_TOUCH] switchToPicture fired (mode entry, not counted)")
+    }
+  }
 
-    let type = QCTouchGestureControlType(rawValue: 5) ?? .off  // 5 = TakePhoto
-    QCSDKCmdCreator.setTouch(
-      type,
-      strength: min(max(strength, 1), 10)
-    ) { [weak self] error in
-      if let error = error {
-        self?.rosaryTouchEnabled = false
-        self?.invokeFlutterResult(result, FlutterError(
-          code: "TOUCH_ENABLE_FAIL",
-          message: error.localizedDescription,
-          details: nil
-        ))
+  private func clearRosaryTouchHooks() {
+    let manager = QCSDKManager.shareInstance()
+    manager.takePicture = {}
+    manager.stopTakePicture = {}
+    manager.switchToPicture = {}
+  }
+
+  private func registerRosaryTouchNotifications() {
+    unregisterRosaryTouchNotifications()
+    _ = OdmBandNotifyCenter.registerNotify()
+    takePictureObserver = NotificationCenter.default.addObserver(
+      forName: .OdmBandTakePicture,
+      object: nil,
+      queue: .main
+    ) { [weak self] _ in
+      print("[ROSARY_TOUCH] TakePicture notification")
+      self?.emitRingTap()
+    }
+    stopTakePictureObserver = NotificationCenter.default.addObserver(
+      forName: .OdmBandStopTakingPicture,
+      object: nil,
+      queue: .main
+    ) { [weak self] _ in
+      print("[ROSARY_TOUCH] StopTakePicture notification")
+      self?.emitRingTap()
+    }
+    // 찬념(MSLPraise) 탭 이벤트는 공개 콜백이 없어 raw D2P 패킷으로 온다.
+    // 기록 중에만 패킷을 관찰해 탭 패턴을 잡는다 (진단 겸 수신 경로).
+    d2pObserver = NotificationCenter.default.addObserver(
+      forName: Notification.Name(OdmNotifyD2P),
+      object: nil,
+      queue: .main
+    ) { [weak self] note in
+      guard let self = self, self.rosaryTouchEnabled else { return }
+      let data = (note.userInfo?[OdmNotifyD2PDataKey] as? Data)
+        ?? (note.userInfo?.values.first(where: { $0 is Data }) as? Data)
+      guard let payload = data else {
+        print("[ROSARY_TOUCH] D2P note without data keys=\(note.userInfo?.keys.map { "\($0)" } ?? [])")
         return
       }
-      self?.invokeFlutterResult(result, ["enabled": true])
+      let hex = payload.map { String(format: "%02x", $0) }.joined(separator: " ")
+      print("[ROSARY_TOUCH] D2P packet: \(hex)")
+    }
+  }
+
+  private func unregisterRosaryTouchNotifications() {
+    if let obs = takePictureObserver {
+      NotificationCenter.default.removeObserver(obs)
+      takePictureObserver = nil
+    }
+    if let obs = stopTakePictureObserver {
+      NotificationCenter.default.removeObserver(obs)
+      stopTakePictureObserver = nil
+    }
+    if let obs = d2pObserver {
+      NotificationCenter.default.removeObserver(obs)
+      d2pObserver = nil
+    }
+  }
+
+  private func enableRosaryTouch(strength: Int, result: @escaping FlutterResult) {
+    let clampedStrength = min(max(strength, 1), 10)
+
+    installRosaryTouchHooks()
+    registerRosaryTouchNotifications()
+
+    func finishFail(_ message: String) {
+      rosaryTouchEnabled = false
+      unregisterRosaryTouchNotifications()
+      clearRosaryTouchHooks()
+      invokeFlutterResult(result, FlutterError(
+        code: "TOUCH_ENABLE_FAIL",
+        message: message,
+        details: nil
+      ))
+    }
+
+    // 검증된 사실: TakePhoto 모드에서 링 탭 → OS 레벨 HID 볼륨키(BT 카메라
+    // 셔터 규약)가 확실히 도착한다. SDK 콜백·D2P 는 어떤 모드에서도 안 온다
+    // (praise 모드는 링 내부 카운트 전용). 따라서 TakePhoto 모드 + 시스템
+    // 볼륨 변화 감지(KVO)를 탭 신호로 사용하고, 감지 즉시 볼륨을 원위치한다.
+    stopInFlightMeasures { [weak self] in
+      guard let self = self else { return }
+      self.mainQueue.asyncAfter(deadline: .now() + 0.8) {
+        QCSDKCmdCreator.setTouch(.takePhoto, strength: clampedStrength) { touchErr in
+          if let touchErr = touchErr {
+            print("[ROSARY_TOUCH] setTouch(takePhoto) failed: \(touchErr.localizedDescription)")
+          } else {
+            print("[ROSARY_TOUCH] setTouch(takePhoto) ok")
+          }
+          self.mainQueue.asyncAfter(deadline: .now() + 0.6) {
+            QCSDKCmdCreator.setGestureControl(.off, strength: clampedStrength) { gestureErr in
+              print("[ROSARY_TOUCH] setGesture(off) \(gestureErr == nil ? "ok" : "failed")")
+              if let touchErr = touchErr {
+                finishFail(touchErr.localizedDescription)
+                return
+              }
+              self.rosaryTouchEnabled = true
+              self.startVolumeTapDetection()
+              self.invokeFlutterResult(result, ["enabled": true])
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // MARK: - 볼륨 기반 탭 감지
+  //
+  // TakePhoto 모드의 링 탭 = HID 볼륨키 (BT 셔터 리모컨 규약). 시스템 볼륨
+  // 변화를 KVO 로 감지해 탭으로 카운트하고, 볼륨은 즉시 기준값으로 되돌린다.
+
+  private func startVolumeTapDetection() {
+    let session = AVAudioSession.sharedInstance()
+    do {
+      try session.setCategory(.ambient, options: [.mixWithOthers])
+      try session.setActive(true)
+    } catch {
+      print("[ROSARY_TOUCH] audio session activate failed: \(error)")
+    }
+
+    if hiddenVolumeView == nil {
+      let vv = MPVolumeView(frame: CGRect(x: -2000, y: -2000, width: 1, height: 1))
+      vv.alpha = 0.01
+      let window = UIApplication.shared.connectedScenes
+        .compactMap { $0 as? UIWindowScene }
+        .flatMap { $0.windows }
+        .first
+      window?.addSubview(vv)
+      hiddenVolumeView = vv
+    }
+
+    // 기준 볼륨으로 맞춰두고(끝단에서 이벤트가 안 오는 것 방지) 감시 시작.
+    suppressVolumeEvents = true
+    setSystemVolume(volumeBaseline)
+    mainQueue.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+      self?.suppressVolumeEvents = false
+    }
+
+    volumeObservation?.invalidate()
+    volumeObservation = session.observe(\.outputVolume, options: [.new, .old]) {
+      [weak self] _, change in
+      guard let self = self else { return }
+      if self.suppressVolumeEvents { return }
+      let old = change.oldValue ?? -1
+      let new = change.newValue ?? -1
+      print("[ROSARY_TOUCH] volume \(old) → \(new) — ring tap")
+      self.emitRingTap()
+      // 스냅백 자체가 또 KVO 를 발사하므로 잠깐 억제.
+      self.suppressVolumeEvents = true
+      self.setSystemVolume(self.volumeBaseline)
+      self.mainQueue.asyncAfter(deadline: .now() + 0.4) {
+        self.suppressVolumeEvents = false
+      }
+    }
+    print("[ROSARY_TOUCH] volume tap detection started")
+  }
+
+  private func stopVolumeTapDetection() {
+    volumeObservation?.invalidate()
+    volumeObservation = nil
+    hiddenVolumeView?.removeFromSuperview()
+    hiddenVolumeView = nil
+    suppressVolumeEvents = false
+  }
+
+  private func setSystemVolume(_ value: Float) {
+    guard let slider = hiddenVolumeView?.subviews
+      .compactMap({ $0 as? UISlider }).first
+    else { return }
+    mainQueue.asyncAfter(deadline: .now() + 0.1) {
+      slider.value = value
     }
   }
 
   private func disableRosaryTouch(result: @escaping FlutterResult) {
     rosaryTouchEnabled = false
-    QCSDKManager.shareInstance().takePicture = {}
+    stopVolumeTapDetection()
+    unregisterRosaryTouchNotifications()
+    clearRosaryTouchHooks()
 
     QCSDKCmdCreator.setTouch(.off, strength: 5) { [weak self] _ in
-      // 끄기 실패해도 앱 쪽 카운트는 이미 중단됨 — 성공으로 처리.
-      self?.invokeFlutterResult(result, true)
+      guard let self = self else { return }
+      self.mainQueue.asyncAfter(deadline: .now() + 0.6) {
+        QCSDKCmdCreator.setGestureControl(.off, strength: 5) { _ in
+          // 끄기 실패해도 앱 쪽 카운트는 이미 중단됨 — 성공으로 처리.
+          self.invokeFlutterResult(result, true)
+        }
+      }
     }
   }
 
@@ -1405,7 +1596,16 @@ final class IosBleBridge: NSObject {
       if isEnable { self.pendingScheduleRestores.removeValue(forKey: "hr") }
       result(["isEnable": isEnable, "interval": interval])
     }, fail: {
-      result(FlutterError(code: "HR_WRITE_FAIL", message: "heart rate write failed", details: nil))
+      // interval 지정 변형은 "일부 기기만 지원"(SDK 문서) — 이 링이 거부하면
+      // interval 없는 기본 변형으로 폴백 (펌웨어 기본 주기로 동작).
+      print("[MONITOR] hr write with interval failed — fallback to plain toggle")
+      QCSDKCmdCreator.setSchedualHeartRateStatus(isEnable, success: { enabled in
+        self.scheduleStateCache["hr"] = isEnable
+        if isEnable { self.pendingScheduleRestores.removeValue(forKey: "hr") }
+        result(["isEnable": enabled, "interval": 0])
+      }, fail: {
+        result(FlutterError(code: "HR_WRITE_FAIL", message: "heart rate write failed", details: nil))
+      })
     })
   }
 
@@ -1419,13 +1619,23 @@ final class IosBleBridge: NSObject {
   }
 
   private func writeSpo2Setting(isEnable: Bool, result: @escaping FlutterResult) {
-    QCSDKCmdCreator.setSchedualBOInfoOn(isEnable, success: { featureOn in
-      self.scheduleStateCache["spo2"] = isEnable
-      if isEnable { self.pendingScheduleRestores.removeValue(forKey: "spo2") }
-      result(["isEnable": featureOn])
-    }, fail: {
-      result(FlutterError(code: "SPO2_WRITE_FAIL", message: "spo2 write failed", details: nil))
-    })
+    // BO 스케줄 쓰기는 링이 간헐적으로 거부한다(수동 SpO₂ 코드도 자체
+    // 재시도를 둘 정도) — 짧은 간격 재시도 후 실패 처리.
+    func attempt(_ n: Int) {
+      QCSDKCmdCreator.setSchedualBOInfoOn(isEnable, success: { featureOn in
+        self.scheduleStateCache["spo2"] = isEnable
+        if isEnable { self.pendingScheduleRestores.removeValue(forKey: "spo2") }
+        result(["isEnable": featureOn])
+      }, fail: {
+        if n < 3 {
+          print("[MONITOR] spo2 write failed — retry \(n + 1)/3")
+          self.mainQueue.asyncAfter(deadline: .now() + 0.7) { attempt(n + 1) }
+        } else {
+          result(FlutterError(code: "SPO2_WRITE_FAIL", message: "spo2 write failed", details: nil))
+        }
+      })
+    }
+    attempt(0)
   }
 
   private func readBpSetting(result: @escaping FlutterResult) {
@@ -2038,16 +2248,19 @@ final class IosBleBridge: NSObject {
     let epoch = manualAbortEpoch
 
     let begin: (Bool) -> Void = { restoreScheduledBo in
-      self.mainQueue.asyncAfter(deadline: .now() + 0.4) {
-        guard self.manualAbortEpoch == epoch else {
-          print("[SPO2_MANUAL] aborted before start")
-          self.invokeFlutterResult(
-            result,
-            FlutterError(code: "SPO2_MANUAL_ABORTED", message: "preempted before start", details: nil)
-          )
-          return
+      // 스트레스·SpO₂ 직후 oneKey/HRV 엔진 잔류 시 EndOneKeyMeasuringError -2.
+      self.stopInFlightMeasures {
+        self.mainQueue.asyncAfter(deadline: .now() + 0.4) {
+          guard self.manualAbortEpoch == epoch else {
+            print("[SPO2_MANUAL] aborted before start")
+            self.invokeFlutterResult(
+              result,
+              FlutterError(code: "SPO2_MANUAL_ABORTED", message: "preempted before start", details: nil)
+            )
+            return
+          }
+          self.beginManualBloodOxygenMeasuring(result: result, restoreScheduledBo: restoreScheduledBo)
         }
-        self.beginManualBloodOxygenMeasuring(result: result, restoreScheduledBo: restoreScheduledBo)
       }
     }
 
@@ -2268,22 +2481,25 @@ final class IosBleBridge: NSObject {
     let epoch = manualAbortEpoch
 
     let begin: (Bool) -> Void = { restoreScheduledHr in
-      self.mainQueue.asyncAfter(deadline: .now() + 0.4) {
-        // 선점(resetMeasurementSession)이 이 지연 사이에 끼면 stop 이후에
-        // startToMeasuring 이 실행돼 고아 세션이 남는다 — 시작 전 취소.
-        guard self.manualAbortEpoch == epoch else {
-          print("[HR_MANUAL] aborted before start")
-          self.invokeFlutterResult(
-            result,
-            FlutterError(code: "HR_MANUAL_ABORTED", message: "preempted before start", details: nil)
+      // 스트레스·SpO₂ 직후 oneKey/HRV 엔진 잔류 시 EndOneKeyMeasuringError -2.
+      self.stopInFlightMeasures {
+        self.mainQueue.asyncAfter(deadline: .now() + 0.4) {
+          // 선점(resetMeasurementSession)이 이 지연 사이에 끼면 stop 이후에
+          // startToMeasuring 이 실행돼 고아 세션이 남는다 — 시작 전 취소.
+          guard self.manualAbortEpoch == epoch else {
+            print("[HR_MANUAL] aborted before start")
+            self.invokeFlutterResult(
+              result,
+              FlutterError(code: "HR_MANUAL_ABORTED", message: "preempted before start", details: nil)
+            )
+            return
+          }
+          self.beginManualHeartRateMeasuring(
+            result: result,
+            restoreScheduledHr: restoreScheduledHr,
+            scheduledHrInterval: savedHrInterval
           )
-          return
         }
-        self.beginManualHeartRateMeasuring(
-          result: result,
-          restoreScheduledHr: restoreScheduledHr,
-          scheduledHrInterval: savedHrInterval
-        )
       }
     }
 

@@ -34,6 +34,8 @@ class RingAutoMeasurementService {
   bool _manualHold = false;
   // 수면 중 자동 측정 정지 — _manualHold 와 독립 (SleepGate 가 제어).
   bool _sleepHold = false;
+  // 묵주 터치 기록 중 자동 측정 정지 — 페이지 이탈 시 재개.
+  bool _touchHold = false;
   Ring? _ring;
   HealthDataRefreshNotifier? _refreshNotifier;
   HealthLiveMetrics? _liveMetrics;
@@ -59,23 +61,25 @@ class RingAutoMeasurementService {
   /// 연결·sdkReady 상태가 바뀔 때마다 호출해 타이머를 켜거나 끈다.
   void onRingStateChanged() => _syncTimer();
 
-  /// 수동 측정 선점 — 진행 중인 자동 사이클을 즉시 중단하고 타이머를 멈춘다.
-  ///
-  /// 대기 중인 자동 BLE 호출은 취소되고, 진행 중인 호출은 네이티브 세션
-  /// 중단 후 강제 종료된다. 사이클이 풀릴 때까지(짧게) 기다린다.
+  /// 수동 측정 선점 — 자동 사이클·BLE 측정 슬롯이 완전히 비울 때까지 대기.
   Future<void> pauseForManual() async {
     _manualHold = true;
     _stop();
-    if (!_cycleInFlight) return;
-
     _abortRequested = true;
+
     await BleCommandQueue.preemptAutoForManual();
 
-    // 선점된 호출의 future 가 정리될 때까지 잠깐 대기.
-    final deadline = DateTime.now().add(const Duration(seconds: 5));
+    final deadline = DateTime.now().add(const Duration(seconds: 45));
     while (_cycleInFlight && DateTime.now().isBefore(deadline)) {
       await Future<void>.delayed(const Duration(milliseconds: 50));
     }
+    final drainLeft = deadline.difference(DateTime.now());
+    if (drainLeft > Duration.zero) {
+      await BleCommandQueue.awaitAutoMeasureDrain(timeout: drainLeft);
+    }
+
+    BleCommandQueue.clearAutoAbort();
+
     if (_cycleInFlight) {
       debugPrint('[AUTO_MEASURE] pauseForManual — cycle still draining');
     }
@@ -104,8 +108,45 @@ class RingAutoMeasurementService {
     debugPrint('[AUTO_MEASURE] resumed — wake detected');
   }
 
+  /// 묵주 터치 기록 시작 — 진행 중인 자동 사이클을 중단하고 타이머를 멈춘다.
+  Future<void> pauseForTouch() async {
+    if (_touchHold) return;
+    _touchHold = true;
+    _stop();
+    debugPrint('[AUTO_MEASURE] paused — rosary touch');
+    _abortRequested = true;
+
+    await BleCommandQueue.preemptAutoForManual();
+
+    final deadline = DateTime.now().add(const Duration(seconds: 45));
+    while (_cycleInFlight && DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+    final drainLeft = deadline.difference(DateTime.now());
+    if (drainLeft > Duration.zero) {
+      await BleCommandQueue.awaitAutoMeasureDrain(timeout: drainLeft);
+    }
+    BleCommandQueue.clearAutoAbort();
+
+    if (_cycleInFlight) {
+      debugPrint('[AUTO_MEASURE] pauseForTouch — cycle still draining');
+    }
+  }
+
+  /// 묵주 터치 기록 종료 — 종료 시점부터 5분 간격으로 자동 측정을 재개한다.
+  void resumeAfterTouch() {
+    if (!_touchHold) return;
+    _touchHold = false;
+    _abortRequested = false;
+    _syncTimer(runImmediately: false);
+    debugPrint('[AUTO_MEASURE] resumed — rosary touch ended');
+  }
+
   @visibleForTesting
   bool get sleepHold => _sleepHold;
+
+  @visibleForTesting
+  bool get touchHold => _touchHold;
 
   /// 수동 측정 결과 저장용 공용 진입점 — 자동 측정과 같은 DB·알림 경로.
   Future<void> recordMeasurement(
@@ -125,7 +166,7 @@ class RingAutoMeasurementService {
   }
 
   void _syncTimer({bool runImmediately = true}) {
-    if (_manualHold || _sleepHold) return;
+    if (_manualHold || _sleepHold || _touchHold) return;
     final ring = _ring;
     if (ring != null && ring.isConnected && ring.sdkReady) {
       _start(runImmediately: runImmediately);
@@ -157,7 +198,7 @@ class RingAutoMeasurementService {
       debugPrint('[AUTO_MEASURE] cycle skipped — previous still running');
       return;
     }
-    if (_manualHold || _sleepHold) return;
+    if (_manualHold || _sleepHold || _touchHold) return;
     final ring = _ring;
     if (ring == null || !ring.isConnected || !ring.sdkReady) return;
 
@@ -168,18 +209,28 @@ class RingAutoMeasurementService {
     }
 
     _cycleInFlight = true;
+    debugPrint('[AUTO_MEASURE] cycle begin');
+    final saved = <DataType>[];
     try {
       for (final type in const [
         DataType.HeartRate,
         DataType.Stress,
         DataType.Oxygen,
       ]) {
-        if (_abortRequested || _manualHold || _sleepHold) {
-          debugPrint('[AUTO_MEASURE] cycle aborted — manual/sleep hold');
+        if (_abortRequested || _manualHold || _sleepHold || _touchHold) {
+          debugPrint('[AUTO_MEASURE] cycle aborted — manual/sleep/touch hold');
           return;
         }
-        await _measureAndSave(type);
+        if (await _measureAndSave(type)) saved.add(type);
+        if (_abortRequested || _manualHold || _sleepHold || _touchHold) {
+          debugPrint('[AUTO_MEASURE] cycle aborted after $type');
+          return;
+        }
       }
+      debugPrint(
+        '[AUTO_MEASURE] cycle done — saved ${saved.length}/3 '
+        '(${saved.map((t) => t.name).join(', ')})',
+      );
     } finally {
       _cycleInFlight = false;
       // 사이클 중 pause 된 펌웨어 스케줄 복원 (큐 직렬 슬롯에서 실행).
@@ -187,11 +238,11 @@ class RingAutoMeasurementService {
     }
   }
 
-  Future<void> _measureAndSave(DataType type) async {
+  Future<bool> _measureAndSave(DataType type) async {
     final ring = _ring;
-    if (ring == null || !ring.isConnected) return;
+    if (ring == null || !ring.isConnected) return false;
     final method = RingMeasurementStore.methodFor(type);
-    if (method == null) return;
+    if (method == null) return false;
 
     final int value;
     try {
@@ -199,7 +250,7 @@ class RingAutoMeasurementService {
       final parsed = RingMeasurementStore.extractValue(res, type);
       if (parsed == null) {
         debugPrint('[AUTO_MEASURE] $method invalid result: $res');
-        return;
+        return false;
       }
       value = parsed;
     } on PlatformException catch (e) {
@@ -207,7 +258,7 @@ class RingAutoMeasurementService {
           e.code.endsWith('_ABORTED')) {
         // 큐 취소 또는 네이티브 선점 종료 — 정상 선점 흐름.
         debugPrint('[AUTO_MEASURE] $method cancelled by manual measurement');
-        return;
+        return false;
       }
       debugPrint('[AUTO_MEASURE] $method failed: ${e.code} ${e.message}');
       if (e.code.contains('TIMEOUT')) {
@@ -216,13 +267,14 @@ class RingAutoMeasurementService {
           await BleCommandQueue.invoke<dynamic>('resetMeasurementSession');
         } catch (_) {}
       }
-      return;
+      return false;
     } catch (e) {
       debugPrint('[AUTO_MEASURE] $method error: $e');
-      return;
+      return false;
     }
 
     await recordMeasurement(type, value);
     debugPrint('[AUTO_MEASURE] $type = $value saved');
+    return true;
   }
 }

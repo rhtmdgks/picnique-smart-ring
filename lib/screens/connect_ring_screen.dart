@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'dart:io' show Platform;
 import 'package:picnique_rosary_healthcare_smartring/services/ble_command_queue.dart';
+import 'package:picnique_rosary_healthcare_smartring/ring/repository/ring_repository.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_connection_service.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_live_activity.dart';
 import 'package:picnique_rosary_healthcare_smartring/util/BLERealtimeLogger.dart';
@@ -41,12 +42,7 @@ class ConnectRingSettingScreen extends StatefulWidget {
 }
 
 class _ConnectRingSettingScreenState extends State<ConnectRingSettingScreen> {
-  static const EventChannel _eventChannel = EventChannel(
-    'com.example.picnique_ring/ble_events',
-  );
-
   StreamSubscription<List<ScanResult>>? _scanSub;
-  StreamSubscription? _iosScanSub;
   final List<ScanResult> _scanResults = [];
   // UI에 그대로 넘길 리스트(동일한 키 구조 유지: name / address)
   List<Map<String, String>> _connectList = [];
@@ -65,7 +61,6 @@ class _ConnectRingSettingScreenState extends State<ConnectRingSettingScreen> {
   @override
   void dispose() {
     _scanSub?.cancel();
-    _iosScanSub?.cancel();
     if (Platform.isAndroid) {
       FlutterBluePlus.stopScan();
     }
@@ -108,56 +103,17 @@ class _ConnectRingSettingScreenState extends State<ConnectRingSettingScreen> {
       _connectList = [];
     });
 
-    if (Platform.isIOS) {
-      _injectCachedDevice();
-      await _iosScanSub?.cancel();
-      _iosScanSub = _eventChannel.receiveBroadcastStream().listen((event) {
+    _injectCachedDevice();
+    await RingRepository.stopScan();
+    await _scanSub?.cancel();
+    _scanSub = RingRepository.scan(timeout: const Duration(seconds: 10)).listen(
+      (list) {
         if (!mounted) return;
-        if (event is Map && event['type'] == 'scanResult') {
-          final addr = (event['address'] ?? '') as String;
-          final name = (event['name'] ?? '') as String;
-          if (addr.isEmpty) return;
-          _discoveredDuringScan++;
-          final map = {
-            'name': name.isNotEmpty ? name : '(이름 없음)',
-            'address': addr,
-          };
-          final dedup = {for (final e in _connectList) e['address']: e};
-          dedup[addr] = map;
-          setState(() {
-            _connectList = dedup.values.toList();
-          });
-        }
-      });
-      const scanTimeout = Duration(seconds: 10);
-      try {
-        // 스캔은 순수 CoreBluetooth 호출 — SDK 커맨드 파이프라인과 무관하므로
-        // 큐를 우회한다. 큐 경유 시 진행 중 측정(최대 45초) 뒤에 줄 서서
-        // 스캔 시작이 한참 지연된다("검색 안 됨" 체감 원인).
-        await BleCommandQueue.channel
-            .invokeMethod('startScan', <String, dynamic>{
-          'namePrefix': null, // uuidString 기준으로 사용
-          'timeoutMs': scanTimeout.inMilliseconds,
-        });
-        // iOS 네이티브 startScan은 스캔 시작 직후 즉시 true를 반환한다.
-        // UI가 조기 종료되지 않도록 전체 탐색 시간만큼 대기한다.
-        await Future<void>.delayed(scanTimeout);
-      } catch (e) {
-        debugPrint('iOS startScan error: $e');
-      } finally {
-        await _stopScanOnly();
-        _finishScan();
-      }
-    } else {
-      await FlutterBluePlus.stopScan();
-      await _scanSub?.cancel();
-      _scanSub = FlutterBluePlus.scanResults.listen((list) {
-        if (!mounted) return;
-        // 중복 제거(주소 기준) 및 최신 결과로 갱신
         final Map<String, ScanResult> dedup = {};
         for (final r in list) {
+          if (!RingRepository.isYawellRingDevice(r)) continue;
           debugPrint(
-            '[SCAN][Android] name=${_deviceName(r)} addr=${_deviceAddress(r.device)} rssi=${r.rssi}',
+            '[SCAN] name=${_deviceName(r)} addr=${_deviceAddress(r.device)} rssi=${r.rssi}',
           );
           final id = _deviceAddress(r.device);
           if (id != null) dedup[id] = r;
@@ -177,13 +133,12 @@ class _ConnectRingSettingScreenState extends State<ConnectRingSettingScreen> {
           }).toList();
           _connectList = _withCachedDevicePinned(scanned);
         });
-      });
+      },
+    );
 
-      // 정확한 이름 일치 대신 전체 스캔을 노출해 링을 놓치지 않는다(이름 편차 대응).
-      await FlutterBluePlus.startScan(
-        timeout: const Duration(seconds: 10),
-      ).whenComplete(_finishScan);
-    }
+    await Future<void>.delayed(const Duration(seconds: 10));
+    await _stopScanOnly();
+    _finishScan();
   }
 
   void _finishScan() {
@@ -226,20 +181,11 @@ class _ConnectRingSettingScreenState extends State<ConnectRingSettingScreen> {
 
   // 스캔만 중단(연결은 유지). 화면 진입/재탐색에서 사용.
   Future<void> _stopScanOnly() async {
-    if (Platform.isIOS) {
-      try {
-        // startScan 과 동일 — 순수 CoreBluetooth, 큐 우회.
-        await BleCommandQueue.channel.invokeMethod('stopScan');
-      } catch (_) {}
-      await _iosScanSub?.cancel();
-      _iosScanSub = null;
-    } else {
-      try {
-        await FlutterBluePlus.stopScan();
-      } catch (_) {}
-      await _scanSub?.cancel();
-      _scanSub = null;
-    }
+    try {
+      await RingRepository.stopScan();
+    } catch (_) {}
+    await _scanSub?.cancel();
+    _scanSub = null;
     if (mounted) setState(() => _isScanning = false);
   }
 

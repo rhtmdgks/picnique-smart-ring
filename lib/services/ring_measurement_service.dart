@@ -8,6 +8,7 @@ import 'package:picnique_rosary_healthcare_smartring/core/enum/measurement_sourc
 import 'package:picnique_rosary_healthcare_smartring/services/ble_command_queue.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_auto_measurement_service.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_measurement_store.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/ring_session_arbiter.dart';
 
 /// 수동 BLE 측정의 단일 Dart 진입점.
 ///
@@ -36,16 +37,20 @@ class RingMeasurementService {
       );
     }
 
+    if (!RingSessionArbiter.instance.enter(RingSessionMode.manualMeasure)) {
+      throw PlatformException(
+        code: 'MEASURE_SESSION_BUSY',
+        message: 'another ring session active',
+      );
+    }
     _manualBusy = true;
     final auto = RingAutoMeasurementService.instance;
     try {
-      // 자동 측정 선점 — 진행 중이어도 즉시 중단시키고 수동을 먼저 실행한다.
+      // 자동 측정 teardown(0x6a stop + drain) 완료 후 수동 시작.
       await auto.pauseForManual();
 
-      // iOS: 선점 직후 stopToMeasuring 여파로 바로 측정을 시작하면 깨질 수
-      // 있어 잠시 안정화한다.
       if (Platform.isIOS) {
-        await Future<void>.delayed(const Duration(seconds: 1));
+        await Future<void>.delayed(const Duration(milliseconds: 300));
       }
 
       final dynamic res = await BleCommandQueue.invoke<dynamic>(method);
@@ -82,6 +87,7 @@ class RingMeasurementService {
       rethrow;
     } finally {
       _manualBusy = false;
+      RingSessionArbiter.instance.exitToBackground();
       // 수동 완료(성공·실패 무관) 시점부터 5분 간격으로 자동 측정 재개.
       auto.resumeAfterManual();
       // 측정을 위해 pause 된 펌웨어 스케줄 복원 (큐 직렬 슬롯에서 실행).

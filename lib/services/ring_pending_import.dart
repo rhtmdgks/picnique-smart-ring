@@ -63,9 +63,17 @@ class RingPendingImport {
   }) async {
     await DbManager.I.open();
 
-    final snap = await _channel.invokeMethod<Map<dynamic, dynamic>>(
-      'fetchPendingHealthSnapshot',
-    );
+    Map<dynamic, dynamic>? snap;
+    try {
+      snap = await _channel.invokeMethod<Map<dynamic, dynamic>>(
+        'fetchPendingHealthSnapshot',
+      );
+    } on MissingPluginException {
+      return 0;
+    } on PlatformException catch (e) {
+      if (e.code == 'MissingPluginException') return 0;
+      rethrow;
+    }
     final raw = (snap?['records'] as List<dynamic>?) ?? const <dynamic>[];
     final fetchedLineCount =
         (snap?['fetchedLineCount'] as int?) ?? raw.length;

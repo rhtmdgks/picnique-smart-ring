@@ -1,55 +1,45 @@
+// Facade over lib/ring/ — replaces native MethodChannel BLE bridge.
+// Source: colmi_r02_client Client queues (MIT) + prior BleCommandQueue priority model.
+
 import 'dart:async';
-import 'dart:io';
-import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:picnique_rosary_healthcare_smartring/ring/repository/ring_repository.dart';
+import 'package:picnique_rosary_healthcare_smartring/ring/transport/ring_command_queue.dart'
+    as ring_queue;
 
-/// BLE 작업 우선순위 — 낮은 index 가 높은 우선순위.
-///
-/// - [connection]: 연결·설정 등 즉시성 높은 호출 (기본값)
-/// - [manual]: 사용자 수동 측정 (선점 주체)
-/// - [uiFresh]: 화면 진입 시 최신화 등 사용자 체감 호출
-/// - [backgroundSync]: 자동 측정·백그라운드 pull (선점 대상)
 enum BleOpPriority { connection, manual, uiFresh, backgroundSync }
 
-/// QCBandSDK / Oudmon SDK는 동시 MethodChannel 호출 시 응답이 엉킨다.
-/// 모든 BLE `invokeMethod`를 iOS·Android 공통 직렬 실행한다.
-/// 수동 측정(`executeManualMeasurement`, legacy `syncManual*`)은 우선 처리한다.
-///
-/// 자동 측정은 [invokeAuto]로 등록한다 — [BleOpPriority.backgroundSync]
-/// (최저 우선순위)이며, 수동 측정 요청 시 [preemptAutoForManual]로
-/// 대기분 취소·진행분 강제 중단(선점)이 가능하다.
 class BleCommandQueue {
   BleCommandQueue._();
 
+  /// Legacy — Dart-only stack; kept for API compat.
   static const MethodChannel channel = MethodChannel(
     'com.example.picnique_ring/ble',
   );
 
-  /// 자동 측정 선점 시 취소된 호출에 쓰는 에러 코드.
   static const String autoCancelledCode = 'AUTO_MEASURE_CANCELLED';
 
-  static const Set<String> _manualMethods = {
-    'executeManualMeasurement',
-    'resetMeasurementSession',
-    'syncManualHeartRate',
-    'syncManualPressure',
-    'syncManualBloodOxygen',
-    'syncManualHrv',
-    'syncManualBp',
-    'syncManualTemperature',
-  };
-
-  static bool _draining = false;
   static int _manualInFlight = 0;
-  static final List<_QueuedBleCall> _pending = [];
-  static _QueuedBleCall? _inFlightCall;
-  static Completer<void>? _inFlightAbort;
+  static int _autoMeasureDepth = 0;
+  static bool _autoAborted = false;
+  static final RingRepository _repo = RingRepository.instance;
 
   static bool get manualInFlight => _manualInFlight > 0;
+  static bool get autoMeasureInFlight => _autoMeasureDepth > 0;
 
-  /// 자동 모니터링·설정 쓰기 전 — 수동 측정이 끝날 때까지 대기.
+  static void clearAutoAbort() => _autoAborted = false;
+
+  static ring_queue.RingCommandPriority _mapPriority(BleOpPriority p) =>
+      switch (p) {
+        BleOpPriority.connection => ring_queue.RingCommandPriority.connection,
+        BleOpPriority.manual => ring_queue.RingCommandPriority.manual,
+        BleOpPriority.uiFresh => ring_queue.RingCommandPriority.uiFresh,
+        BleOpPriority.backgroundSync =>
+          ring_queue.RingCommandPriority.backgroundSync,
+      };
+
   static Future<void> waitUntilManualIdle({
     Duration timeout = const Duration(seconds: 120),
   }) async {
@@ -57,257 +47,298 @@ class BleCommandQueue {
     while (_manualInFlight > 0 && DateTime.now().isBefore(deadline)) {
       await Future<void>.delayed(const Duration(milliseconds: 150));
     }
-    if (Platform.isIOS) {
-      await Future<void>.delayed(const Duration(seconds: 2));
+  }
+
+  static Future<void> waitUntilQueueIdle({
+    Duration timeout = const Duration(seconds: 30),
+  }) async {
+    final deadline = DateTime.now().add(timeout);
+    while (DateTime.now().isBefore(deadline)) {
+      if (_repo.isConnected) return;
+      await Future<void>.delayed(const Duration(milliseconds: 100));
     }
   }
 
-  /// 기본 [BleOpPriority.connection] 우선순위 호출.
-  ///
-  /// 수동 측정 메서드([_manualMethods])는 자동으로 [BleOpPriority.manual]
-  /// 로 승격된다. 화면 최신화 등은 [priority]에 [BleOpPriority.uiFresh]를
-  /// 지정한다. (Dart 는 optional positional 과 named 를 섞을 수 없어
-  /// [priority]도 optional positional 이다.)
+  static Future<void> awaitAutoMeasureDrain({
+    Duration timeout = const Duration(seconds: 45),
+  }) async {
+    final deadline = DateTime.now().add(timeout);
+    while (_autoMeasureDepth > 0 && DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+  }
+
+  static Future<void> preemptAutoForManual() async {
+    _autoAborted = true;
+    _repo.realtimeHr.requestCancel();
+    try {
+      await _repo.realtimeHr.teardownAll();
+    } catch (_) {}
+    await awaitAutoMeasureDrain();
+  }
+
+  static Future<void> flushPendingScheduleRestores() async {}
+
   static Future<T?> invoke<T>(
     String method, [
     dynamic arguments,
-    BleOpPriority? priority,
-  ]) {
-    final resolved = _manualMethods.contains(method)
-        ? BleOpPriority.manual
-        : (priority ?? BleOpPriority.connection);
-    return _enqueue<T>(method, arguments, priority: resolved);
-  }
-
-  /// 자동 측정 전용 — [BleOpPriority.backgroundSync] 별칭.
-  /// 수동 측정이 들어오면 취소·선점될 수 있다.
-  static Future<T?> invokeAuto<T>(String method, [dynamic arguments]) {
-    return _enqueue<T>(method, arguments, priority: BleOpPriority.backgroundSync);
-  }
-
-  /// iOS: 측정을 위해 pause 된 펌웨어 스케줄(HR·SpO₂·스트레스·HRV)을
-  /// 큐 직렬 슬롯에서 복원한다. 네이티브 즉시 write 는 큐가 실행 중인
-  /// 다른 BLE 명령과 인터리브되어 거부되므로, 반드시 이 경로로만 복원.
-  /// 실패분은 네이티브 pending 에 남아 다음 호출에서 재시도된다.
-  static Future<void> flushPendingScheduleRestores() async {
-    if (!Platform.isIOS) return;
+    BleOpPriority priority = BleOpPriority.connection,
+  ]) async {
+    final isManual = _isManualMethod(method);
+    if (isManual) _manualInFlight++;
     try {
-      final remaining = await invokeAuto<dynamic>('restorePendingSchedules');
-      if (remaining is int && remaining > 0) {
-        debugPrint('[SCHEDULE] restore flush — $remaining still pending');
-      }
-    } on PlatformException catch (e) {
-      if (e.code == autoCancelledCode) return; // 수동 선점 — 다음 기회에.
-      debugPrint('[SCHEDULE] restore flush failed: ${e.code} ${e.message}');
-    } catch (e) {
-      debugPrint('[SCHEDULE] restore flush error: $e');
+      final result = await _dispatch(method, arguments, priority);
+      return result as T?;
+    } on ring_queue.RingCommandException catch (e) {
+      throw PlatformException(code: e.code, message: e.message);
+    } finally {
+      if (isManual) _manualInFlight--;
     }
   }
 
-  static Future<T?> _enqueue<T>(
-    String method,
-    dynamic arguments, {
-    required BleOpPriority priority,
-  }) {
-    final completer = Completer<T?>();
-
-    _pending.add(
-      _QueuedBleCall(
-        method: method,
-        arguments: arguments,
-        priority: priority,
-        completer: completer,
-      ),
-    );
-    _drain();
-    return completer.future;
+  static Future<T?> invokeAuto<T>(
+    String method, [
+    dynamic arguments,
+  ]) async {
+    if (_autoAborted) {
+      throw PlatformException(code: autoCancelledCode);
+    }
+    _autoMeasureDepth++;
+    try {
+      if (_autoAborted) {
+        throw PlatformException(code: autoCancelledCode);
+      }
+      return await invoke<T>(method, arguments, BleOpPriority.backgroundSync);
+    } finally {
+      _autoMeasureDepth--;
+    }
   }
 
-  /// 세션 충돌·타임아웃성 실패를 지수 backoff(5초 → 10초 → 20초)로
-  /// 재시도한다. 마지막 시도 실패 시 그대로 rethrow.
-  ///
-  /// 재시도 대상: [PlatformException] 중 code 에 'SESSION_BUSY',
-  /// 'MEASURE_IN_PROGRESS' 또는 'TIMEOUT' 이 포함된 경우.
-  static Future<T> runWithSessionRetry<T>(
-    Future<T> Function() task, {
+  static Future<T?> runWithSessionRetry<T>(
+    Future<T?> Function() action, {
     int maxAttempts = 3,
   }) async {
-    for (var attempt = 1; ; attempt++) {
+    for (var i = 0; i < maxAttempts; i++) {
       try {
-        return await task();
-      } on PlatformException catch (e) {
-        final retryable = e.code.contains('SESSION_BUSY') ||
-            e.code.contains('MEASURE_IN_PROGRESS') ||
-            e.code.contains('TIMEOUT');
-        if (!retryable || attempt >= maxAttempts) rethrow;
-        final delay = Duration(seconds: 5 * math.pow(2, attempt - 1).toInt());
-        debugPrint(
-          '[BLE_QUEUE] retryable failure (${e.code}) — '
-          'retry $attempt/$maxAttempts in ${delay.inSeconds}s',
-        );
-        await Future<void>.delayed(delay);
-      }
-    }
-  }
-
-  /// 수동 측정 선점: 대기 중인 backgroundSync 호출은 즉시 취소하고, 진행
-  /// 중인 backgroundSync 호출은 네이티브 세션을 중단시킨 뒤 강제로
-  /// 끝낸다(응답은 버린다).
-  static Future<void> preemptAutoForManual() async {
-    // 1) 큐에서 대기 중인 자동 호출 제거.
-    final queued = _pending.where((c) => c.isAuto).toList();
-    _pending.removeWhere((c) => c.isAuto);
-    for (final call in queued) {
-      if (!call.completer.isCompleted) {
-        call.completer.completeError(
-          PlatformException(
-            code: autoCancelledCode,
-            message: '${call.method} cancelled — preempted by manual measurement',
-          ),
-        );
-      }
-    }
-
-    // 2) 진행 중인 자동 호출 중단.
-    final inFlight = _inFlightCall;
-    final abort = _inFlightAbort;
-    if (inFlight != null && inFlight.isAuto && abort != null) {
-      // 네이티브 측정 세션 정리 — 큐가 막혀 있으므로 채널 직접 호출.
-      // (iOS: stopToMeasuring 으로 측정 자체를 중단, Android: 세션 상태 초기화)
-      try {
-        await channel
-            .invokeMethod<void>('resetMeasurementSession')
-            .timeout(const Duration(seconds: 3));
+        return await action();
       } catch (e) {
-        debugPrint('[BLE_QUEUE] preempt reset failed: $e');
-      }
-      if (!abort.isCompleted) abort.complete();
-    }
-  }
-
-  static void _drain() {
-    if (_draining) return;
-    _draining = true;
-    unawaited(_drainLoop());
-  }
-
-  static Future<void> _drainLoop() async {
-    while (_pending.isNotEmpty) {
-      await _execute(_takeNext());
-    }
-    _draining = false;
-  }
-
-  /// 우선순위(enum index)가 가장 높은 호출을 꺼낸다.
-  /// 같은 우선순위끼리는 큐 삽입 순서(FIFO)를 유지한다.
-  static _QueuedBleCall _takeNext() {
-    var bestIdx = 0;
-    for (var i = 1; i < _pending.length; i++) {
-      if (_pending[i].priority.index < _pending[bestIdx].priority.index) {
-        bestIdx = i;
+        if (i == maxAttempts - 1) rethrow;
+        await Future<void>.delayed(Duration(milliseconds: 400 * (i + 1)));
       }
     }
-    return _pending.removeAt(bestIdx);
+    return null;
   }
 
-  static Duration _timeoutFor(String method, bool isManual) {
-    if (isManual) {
-      return const Duration(seconds: 95);
-    }
-    return const Duration(seconds: 50);
-  }
+  static bool _isManualMethod(String method) => const {
+        'executeManualMeasurement',
+        'resetMeasurementSession',
+        'syncManualHeartRate',
+        'syncManualPressure',
+        'syncManualBloodOxygen',
+        'enableRosaryTouch',
+        'disableRosaryTouch',
+      }.contains(method);
 
-  static Future<void> _execute(_QueuedBleCall call) async {
-    final isManual = call.isManual;
-    // 자동 측정도 측정 명령 자체는 오래 걸리므로 수동과 같은 타임아웃을 쓴다.
-    final timeout = _timeoutFor(call.method, isManual || call.isAuto);
-    if (isManual) {
-      _manualInFlight++;
-    }
-    _inFlightCall = call;
-    final abort = call.isAuto ? Completer<void>() : null;
-    _inFlightAbort = abort;
-    try {
-      final channelFuture = channel
-          .invokeMethod<dynamic>(call.method, call.arguments)
-          .timeout(timeout);
-
-      dynamic result;
-      var aborted = false;
-      if (abort != null) {
-        result = await Future.any<dynamic>([
-          channelFuture,
-          abort.future.then((_) {
-            aborted = true;
-            return null;
-          }),
-        ]);
-      } else {
-        result = await channelFuture;
-      }
-
-      if (aborted) {
-        // 늦게 도착할 네이티브 응답·에러는 버린다.
-        unawaited(channelFuture.then<dynamic>(
-          (_) => null,
-          onError: (_) => null,
-        ));
-        if (!call.completer.isCompleted) {
-          call.completer.completeError(
-            PlatformException(
-              code: autoCancelledCode,
-              message:
-                  '${call.method} aborted — preempted by manual measurement',
-            ),
+  static Future<dynamic> _dispatch(
+    String method,
+    dynamic arguments,
+    BleOpPriority priority,
+  ) async {
+    _mapPriority(priority); // reserved for future queue priority wiring
+    switch (method) {
+      case 'connectDirectly':
+      case 'reconnectKnownDevice':
+        final addr = (arguments as Map?)?['deviceAddress'] as String?;
+        if (addr == null) throw PlatformException(code: 'NO_ADDRESS');
+        return _repo.connectByAddress(addr);
+      case 'disconnect':
+        await _repo.disconnect();
+        return true;
+      case 'getBatteryLevel':
+        final b = await _repo.battery.query();
+        return {'level': b.level, 'charging': b.charging};
+      case 'syncTimeAndGetCoreFeatures':
+        await _repo.setTime.execute();
+        return {'Stress': 'supported', 'HRV': 'supported'};
+      case 'enableRealtimeNotifications':
+      case 'enableRealtime':
+        return true;
+      case 'disableRealtimeNotifications':
+      case 'disableRealtime':
+        return true;
+      case 'syncManualHeartRate':
+      case 'executeManualMeasurement':
+        if (method == 'executeManualMeasurement') {
+          final type = (arguments as Map?)?['type'] as String? ?? 'heart';
+          if (type.contains('oxygen') || type.contains('spo2')) {
+            return _measureSpo2Map();
+          }
+          if (type.contains('stress') || type.contains('pressure')) {
+            return _measureStressMap();
+          }
+        }
+        return _measureHrMap();
+      case 'syncManualBloodOxygen':
+        return _measureSpo2Map();
+      case 'syncManualPressure':
+        return _measureStressMap();
+      case 'resetMeasurementSession':
+        await _repo.realtimeHr.stop();
+        return true;
+      case 'enableRosaryTouch':
+        return true;
+      case 'disableRosaryTouch':
+        return true;
+      case 'syncTodaySport':
+        final samples = await _repo.activity.fetchHistory(daysAgo: 0);
+        var steps = 0;
+        var cal = 0;
+        var dist = 0;
+        for (final s in samples) {
+          steps += s.steps;
+          cal += s.calories;
+          dist += s.distanceMeters;
+        }
+        return {
+          'totalSteps': steps,
+          'calorie': cal,
+          'walkDistance': dist,
+        };
+      case 'syncSleepNew':
+      case 'syncSleepDisplay':
+        if (!_repo.isConnected || !_repo.isDiscoveryComplete) {
+          throw PlatformException(code: 'NOT_CONNECTED');
+        }
+        if (!_repo.hasBigDataChannel) {
+          throw PlatformException(
+            code: 'BIG_DATA_UNAVAILABLE',
+            message: 'de5bf728 big-data GATT not discovered',
           );
         }
-        return;
-      }
-
-      if (!call.completer.isCompleted) {
-        call.completer.complete(result);
-      }
-    } on TimeoutException {
-      if (!call.completer.isCompleted) {
-        call.completer.completeError(
-          PlatformException(
-            code: isManual ? 'MEASURE_CHANNEL_TIMEOUT' : 'BLE_CHANNEL_TIMEOUT',
-            message: '${call.method} timed out after ${timeout.inSeconds}s',
-          ),
-        );
-      }
-    } catch (e, st) {
-      if (!call.completer.isCompleted) {
-        call.completer.completeError(e, st);
-      }
-    } finally {
-      _inFlightCall = null;
-      _inFlightAbort = null;
-      if (isManual) {
-        _manualInFlight--;
-        if (Platform.isIOS) {
-          await Future<void>.delayed(const Duration(seconds: 2));
+        final sessions = await _repo.sleep.fetchHistory();
+        final list = <Map<String, dynamic>>[];
+        for (final session in sessions) {
+          for (final stage in session.stages) {
+            list.add({
+              'd': stage.durationMinutes * 60,
+              't': stage.stageByte,
+            });
+          }
         }
+        if (sessions.isEmpty) return {'list': []};
+        return {
+          'st': sessions.first.start.millisecondsSinceEpoch ~/ 1000,
+          'et': sessions.first.end.millisecondsSinceEpoch ~/ 1000,
+          'list': list,
+        };
+      case 'syncHeartRate':
+        final day = DateTime.now().toUtc();
+        final log = await _repo.hrHistory.fetchDayLog(day);
+        return {'samples': log?.samples.length ?? 0};
+      case 'collectHealthIfIdle':
+        if (_manualInFlight > 0 || _autoAborted) return false;
+        try {
+          await _repo.hrHistory.fetchDay(DateTime.now().toUtc());
+          await _repo.activity.fetchHistory(daysAgo: 0);
+        } catch (_) {}
+        return true;
+      case 'getBluetoothState':
+        final on = await _repo.ensurePermissions();
+        return on ? 'on' : 'off';
+      case 'startScan':
+      case 'stopScan':
+        return true;
+      case 'readHw':
+        final info = await _repo.deviceInfo.read();
+        return info.hwVersion;
+      case 'readFw':
+        final info = await _repo.deviceInfo.read();
+        return info.fwVersion;
+      case 'writeHrSetting': {
+        final args = Map<String, dynamic>.from((arguments as Map?) ?? {});
+        final status = await _repo.settings.writeHrSetting(
+          enabled: args['isEnable'] == true,
+          intervalMinutes: (args['interval'] as num?)?.toInt() ?? 10,
+        );
+        return {'isEnable': status.enabled, 'interval': status.intervalMinutes};
       }
+      case 'readHrSetting': {
+        final status = await _repo.settings.readHrSetting();
+        return {'isEnable': status.enabled, 'interval': status.intervalMinutes};
+      }
+      case 'writeSpo2Setting': {
+        final args = Map<String, dynamic>.from((arguments as Map?) ?? {});
+        final status = await _repo.settings.writeSpo2Setting(
+          enabled: args['isEnable'] == true,
+        );
+        return {'isEnable': status.enabled};
+      }
+      case 'readSpo2Setting': {
+        final status = await _repo.settings.readSpo2Setting();
+        return {'isEnable': status.enabled};
+      }
+      case 'writePressureSetting': {
+        final args = Map<String, dynamic>.from((arguments as Map?) ?? {});
+        final status = await _repo.settings.writeStressSetting(
+          enabled: args['isEnable'] == true,
+        );
+        return {'isEnable': status.enabled};
+      }
+      case 'readPressureSetting': {
+        final status = await _repo.settings.readStressSetting();
+        return {'isEnable': status.enabled};
+      }
+      case 'writeHrvSetting': {
+        final args = Map<String, dynamic>.from((arguments as Map?) ?? {});
+        final status = await _repo.settings.writeHrvSetting(
+          enabled: args['isEnable'] == true,
+        );
+        return {'isEnable': status.enabled};
+      }
+      case 'readHrvSetting': {
+        final status = await _repo.settings.readHrvSetting();
+        return {'isEnable': status.enabled};
+      }
+      default:
+        debugPrint('[BLE] unimplemented method: $method');
+        throw PlatformException(code: 'NOT_IMPLEMENTED', message: method);
     }
   }
-}
 
-class _QueuedBleCall {
-  _QueuedBleCall({
-    required this.method,
-    required this.arguments,
-    required this.priority,
-    required this.completer,
-  });
+  static Future<Map<String, dynamic>> _measureHrMap() async {
+    _throwIfAutoCancelled();
+    final r = await _repo.realtimeHr.measureOnce();
+    return {
+      'hr': r.bpm,
+      'value': r.bpm,
+      'errCode': r.errorCode,
+    };
+  }
 
-  final String method;
-  final dynamic arguments;
-  final BleOpPriority priority;
-  final Completer<dynamic> completer;
+  static Future<Map<String, dynamic>> _measureSpo2Map() async {
+    _throwIfAutoCancelled();
+    final r = await _repo.spo2.measureOnce();
+    return {
+      'spo2': r.bpm,
+      'value': r.bpm,
+      'errCode': r.errorCode,
+    };
+  }
 
-  bool get isManual => priority == BleOpPriority.manual;
+  static Future<Map<String, dynamic>> _measureStressMap() async {
+    _throwIfAutoCancelled();
+    final r = await _repo.realtimeHr.measureStressOnce();
+    return {
+      'pressure': r.bpm,
+      'stress': r.bpm,
+      'value': r.bpm,
+      'errCode': r.errorCode,
+    };
+  }
 
-  /// 기존 `isAuto` 의미 = backgroundSync (선점 대상).
-  bool get isAuto => priority == BleOpPriority.backgroundSync;
+  static void _throwIfAutoCancelled() {
+    if (_autoMeasureDepth > 0 && _autoAborted) {
+      throw PlatformException(code: autoCancelledCode);
+    }
+  }
 }

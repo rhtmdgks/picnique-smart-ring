@@ -145,6 +145,7 @@ class BleBridge(private val appContext: Context) : RingMeasurementSessionHost {
                 object : ICommandResponse<CameraNotifyRsp> {
                     override fun onDataResponse(rsp: CameraNotifyRsp?) {
                         if (rsp == null) return
+                        android.util.Log.i("RosaryTouch", "camera notify action=${rsp.action}")
                         if (rsp.action == CameraNotifyRsp.ACTION_TAKE_PHOTO) {
                             mainHandler.post {
                                 touchEventSink?.invoke(mapOf("type" to "ringTap"))
@@ -153,15 +154,43 @@ class BleBridge(private val appContext: Context) : RingMeasurementSessionHost {
                     }
                 }
             )
+            // 찬념 모드 탭 이벤트 후보 채널(cmd 29 = MusicCommandRsp) 관찰 —
+            // 탭이 이 경로로 오면 그대로 카운트한다.
+            BleOperateManager.getInstance().addNotifyListener(
+                29,
+                object : ICommandResponse<BaseRspCmd> {
+                    override fun onDataResponse(rsp: BaseRspCmd?) {
+                        android.util.Log.i("RosaryTouch", "notify(29) $rsp")
+                        mainHandler.post {
+                            touchEventSink?.invoke(mapOf("type" to "ringTap"))
+                        }
+                    }
+                }
+            )
+            // TakePhoto 모드 금지 — BT 카메라 셔터 규약상 링이 OS 레벨 HID
+            // 볼륨키를 보낸다. 찬념(MSLPraise) 모드가 기도 탭 카운트 전용.
+            // 제스처 컨트롤은 명시적으로 꺼서 볼륨 조작 경로를 차단한다.
             CommandHandle.getInstance().executeReqCmd(
                 TouchControlReq.getWriteInstance(
-                    TOUCH_TYPE_TAKE_PHOTO,
+                    TOUCH_TYPE_MSL_PRAISE,
                     true,
                     strength.coerceIn(1, 10),
                 ),
                 object : ICommandResponse<TouchControlResp> {
                     override fun onDataResponse(rsp: TouchControlResp?) {
-                        result.success(mapOf("enabled" to true))
+                        android.util.Log.i(
+                            "RosaryTouch",
+                            "touch control written (appType=${rsp?.appType} strength=${rsp?.strength})",
+                        )
+                        CommandHandle.getInstance().executeReqCmd(
+                            TouchControlReq.getWriteInstance(TOUCH_TYPE_OFF, false, 5),
+                            object : ICommandResponse<TouchControlResp> {
+                                override fun onDataResponse(rsp2: TouchControlResp?) {
+                                    android.util.Log.i("RosaryTouch", "gesture control off")
+                                    result.success(mapOf("enabled" to true))
+                                }
+                            }
+                        )
                     }
                 }
             )
@@ -173,11 +202,19 @@ class BleBridge(private val appContext: Context) : RingMeasurementSessionHost {
     fun disableRosaryTouch(result: MethodChannel.Result) {
         try {
             BleOperateManager.getInstance().removeOutCameraListener()
+            BleOperateManager.getInstance().removeNotifyListener(29)
             CommandHandle.getInstance().executeReqCmd(
                 TouchControlReq.getWriteInstance(TOUCH_TYPE_OFF, true, 5),
                 object : ICommandResponse<TouchControlResp> {
                     override fun onDataResponse(rsp: TouchControlResp?) {
-                        result.success(true)
+                        CommandHandle.getInstance().executeReqCmd(
+                            TouchControlReq.getWriteInstance(TOUCH_TYPE_OFF, false, 5),
+                            object : ICommandResponse<TouchControlResp> {
+                                override fun onDataResponse(rsp2: TouchControlResp?) {
+                                    result.success(true)
+                                }
+                            }
+                        )
                     }
                 }
             )
@@ -190,7 +227,7 @@ class BleBridge(private val appContext: Context) : RingMeasurementSessionHost {
         // QCTouchGestureControlType (iOS 헤더 기준, 펌웨어 공통):
         // 0=Off, 1=Music, 2=Video, 3=MSLPraise, 4=EBook, 5=TakePhoto, ...
         private const val TOUCH_TYPE_OFF = 0
-        private const val TOUCH_TYPE_TAKE_PHOTO = 5
+        private const val TOUCH_TYPE_MSL_PRAISE = 3
     }
 
     // Expose as StreamHandler for EventChannel

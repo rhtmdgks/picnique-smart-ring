@@ -17,6 +17,7 @@ import 'package:picnique_rosary_healthcare_smartring/providers/db/db_manager.dar
 import 'package:picnique_rosary_healthcare_smartring/core/constants/ring_measurement_policy.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ble_command_queue.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_monitoring_status.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/ring_session_arbiter.dart';
 
 import '../db/app_db.dart';
 
@@ -234,6 +235,12 @@ Future<RingMonitoringStatus> enableRingAutoMonitoring({
   MethodChannel platform = _blePlatformChannel,
 }) async {
   await BleCommandQueue.waitUntilManualIdle();
+  // 수동 측정·묵주 터치 세션 중엔 설정 쓰기를 미룬다 — 세션과 인터리브되면
+  // write fail 이 난다. 세션이 안 끝나면 이번 기회는 건너뛴다(재연결 때 재시도).
+  if (!await RingSessionArbiter.instance.waitUntilBackground()) {
+    debugPrint('[MONITOR] skipped — ring session busy');
+    return RingMonitoringStatus.allBroken;
+  }
 
   const hrInterval = RingMeasurementPolicy.ringAutoHeartIntervalMinutes;
 

@@ -2,55 +2,61 @@ import Flutter
 import UIKit
 import BackgroundTasks
 
+/// Dart-only BLE companion — native keepalive/pending queue stubs (no OEM SDK).
+private final class RingHealthEventStreamHandler: NSObject, FlutterStreamHandler {
+  func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
+    nil
+  }
+
+  func onCancel(withArguments arguments: Any?) -> FlutterError? {
+    nil
+  }
+}
+
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
-  private var bleBridge: IosBleBridge?
-
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
     BGTaskScheduler.shared.register(
-      forTaskWithIdentifier: IosBleBridge.bgTaskId,
+      forTaskWithIdentifier: "kr.picnique.smartring.ring-sync",
       using: nil
     ) { task in
-      self.handleRingBackgroundSync(task: task as! BGAppRefreshTask)
+      task.setTaskCompleted(success: true)
     }
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
+
     let messenger = engineBridge.applicationRegistrar.messenger()
-    DispatchQueue.main.async { [weak self] in
-      guard self?.bleBridge == nil else { return }
-      self?.bleBridge = IosBleBridge(messenger: messenger)
-      self?.bleBridge?.resumeKeepaliveIfNeeded()
-    }
-  }
-
-  override func applicationDidBecomeActive(_ application: UIApplication) {
-    bleBridge?.resumeKeepaliveIfNeeded()
-    super.applicationDidBecomeActive(application)
-  }
-
-  private func handleRingBackgroundSync(task: BGAppRefreshTask) {
-    IosBleBridge.scheduleBackgroundSync()
-
-    let work = DispatchWorkItem { [weak self] in
-      guard let bridge = self?.bleBridge else {
-        task.setTaskCompleted(success: false)
-        return
-      }
-      bridge.performBackgroundHealthSync { ok in
-        task.setTaskCompleted(success: ok)
+    let bgChannel = FlutterMethodChannel(
+      name: "com.example.picnique_ring/background_keepalive",
+      binaryMessenger: messenger
+    )
+    bgChannel.setMethodCallHandler { call, result in
+      switch call.method {
+      case "startBackgroundKeepalive", "stopBackgroundKeepalive", "clearPendingHealthRecords":
+        result(true)
+      case "fetchPendingHealthSnapshot":
+        result(["records": [], "fetchedLineCount": 0])
+      case "fetchPendingHealthRecords":
+        result([])
+      case "replacePendingHealthRecords":
+        result(true)
+      case "collectPendingHealthNow":
+        result(false)
+      default:
+        result(FlutterMethodNotImplemented)
       }
     }
 
-    task.expirationHandler = {
-      work.cancel()
-    }
-
-    DispatchQueue.main.async(execute: work)
+    let healthEvents = FlutterEventChannel(
+      name: "com.example.picnique_ring/health_events",
+      binaryMessenger: messenger
+    )
+    healthEvents.setStreamHandler(RingHealthEventStreamHandler())
   }
 }
