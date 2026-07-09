@@ -3,36 +3,55 @@
 
 import '../ring_protocol_constants.dart';
 
+class ManualAcquireProfile {
+  const ManualAcquireProfile({
+    required this.minWait,
+    required this.maxWait,
+  });
+
+  final Duration minWait;
+  final Duration maxWait;
+
+  static ManualAcquireProfile forSubtype(int subtype) => switch (subtype) {
+        RingProtocolConstants.manualHrSubtype => const ManualAcquireProfile(
+            minWait: Duration(seconds: 15),
+            maxWait: Duration(seconds: 30),
+          ),
+        RingProtocolConstants.manualSpo2Subtype => const ManualAcquireProfile(
+            minWait: Duration(seconds: 15),
+            maxWait: Duration(seconds: 30),
+          ),
+        RingProtocolConstants.manualStressMeasureSubtype =>
+          const ManualAcquireProfile(
+            minWait: Duration(seconds: 28),
+            maxWait: Duration(seconds: 45),
+          ),
+        _ => const ManualAcquireProfile(
+            minWait: Duration(seconds: 15),
+            maxWait: Duration(seconds: 30),
+          ),
+      };
+}
+
 /// Parses 0x69 stream and 0x6a finalize frames for on-demand measures.
 abstract final class ManualMeasureCodec {
-  /// Last stable sample from 0x69 push stream (byte[2]≥0x60 → value byte[8]).
-  static int? parseStreamSample(List<int> packet, int subtype) {
-    if (packet.length < 9) return null;
+  /// 0x69 stream is raw PPG — **not** HR/SpO2/stress. Only readiness via byte[2].
+  static bool isStreamReady(List<int> packet, int subtype) {
+    if (packet.length < 3) return false;
     if ((packet[0] & 0xff) != RingProtocolConstants.cmdManualHeartRate) {
-      return null;
+      return false;
     }
-    if ((packet[1] & 0xff) != subtype) return null;
-
+    if ((packet[1] & 0xff) != subtype) return false;
     final flag = packet[2] & 0xff;
-    if (packet.length > 8) {
-      final direct = packet[8] & 0xff;
-      if (_validMetric(subtype, direct)) return direct;
-    }
-    if (flag >= RingProtocolConstants.manualStreamStableFlag) {
-      final v = packet[8] & 0xff;
-      if (_validMetric(subtype, v)) return v;
-    }
-
-    if (packet.length >= 8) {
-      final le = (packet[6] & 0xff) | ((packet[7] & 0xff) << 8);
-      if (_validMetric(subtype, le)) return le;
-      final b6 = packet[6] & 0xff;
-      if (_validMetric(subtype, b6)) return b6;
-    }
-    return null;
+    return switch (subtype) {
+      RingProtocolConstants.manualStressMeasureSubtype =>
+        flag == 0xa1 || flag >= RingProtocolConstants.manualStreamStableFlag,
+      RingProtocolConstants.manualStressSubtype => flag >= 0x30,
+      _ => flag >= RingProtocolConstants.manualStreamStableFlag,
+    };
   }
 
-  /// 0x6a finalize response — value in byte[2] when byte[3]==0 (btsnoop 6a015f).
+  /// Final metric on 0x6a only (HR 6a015f→95, SpO2 6a0360→96, stress 6a0ba1→25).
   static ({int value, int errorCode}) parseFinalize(
     List<int> packet,
     int subtype,
@@ -45,6 +64,16 @@ abstract final class ManualMeasureCodec {
 
     final b2 = packet[2] & 0xff;
     final b3 = packet[3] & 0xff;
+
+    if (subtype == RingProtocolConstants.manualStressMeasureSubtype &&
+        b3 == 0 &&
+        b2 >= 0x89) {
+      final score = b2 - 0x88;
+      if (score >= 1 && score <= 100) {
+        return (value: score, errorCode: 0);
+      }
+    }
+
     if (b3 == 0 && _validMetric(subtype, b2)) {
       return (value: b2, errorCode: 0);
     }
@@ -57,21 +86,24 @@ abstract final class ManualMeasureCodec {
 
   static List<int> startPayload(int subtype) {
     if (subtype == RingProtocolConstants.manualSpo2Subtype ||
+        subtype == RingProtocolConstants.manualStressMeasureSubtype ||
         subtype == RingProtocolConstants.manualStressSubtype) {
       return [subtype, RingProtocolConstants.manualMeasureDurationSec];
     }
     return [subtype];
   }
 
-  static List<int> finalizePayload(int subtype, {int? lastSample}) {
+  static List<int> finalizePayload(int subtype) {
     switch (subtype) {
       case RingProtocolConstants.manualHrSubtype:
         return [
           subtype,
-          lastSample ?? RingProtocolConstants.manualStreamStableFlag,
+          RingProtocolConstants.manualStreamStableFlag,
           0x00,
         ];
       case RingProtocolConstants.manualSpo2Subtype:
+        return [subtype, 0x00];
+      case RingProtocolConstants.manualStressMeasureSubtype:
         return [subtype, 0x00];
       case RingProtocolConstants.manualStressSubtype:
         return [subtype, 0x30];
@@ -87,7 +119,9 @@ abstract final class ManualMeasureCodec {
     return switch (subtype) {
       RingProtocolConstants.manualHrSubtype => v >= 30 && v <= 220,
       RingProtocolConstants.manualSpo2Subtype => v >= 70 && v <= 100,
-      RingProtocolConstants.manualStressSubtype => v >= 1 && v <= 100,
+      RingProtocolConstants.manualStressSubtype ||
+      RingProtocolConstants.manualStressMeasureSubtype =>
+        v >= 1 && v <= 100,
       _ => v < 250,
     };
   }

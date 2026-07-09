@@ -82,7 +82,10 @@ abstract final class RingProtocolConstants {
   // ── Manual HR subtypes (0x69) ───────────────────────────────────────────
   static const int manualHrSubtype = 0x01;
   static const int manualSpo2Subtype = 0x03;
+  /// Auto-monitoring pref opcode group (0x36 etc.) — not on-demand 0x69 subtype.
   static const int manualStressSubtype = 0x08;
+  /// On-demand stress/HRV realtime — btsnoop R08: `69 0b 25`, finalize `6a 0b`.
+  static const int manualStressMeasureSubtype = 0x0b;
 
   static const int prefRead = 0x01;
   static const int prefWrite = 0x02;

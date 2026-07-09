@@ -5,6 +5,7 @@ import '../codec/big_data_codec.dart';
 import '../codec/packet_codec.dart';
 import '../ring_protocol_constants.dart';
 import '../transport/ring_command_queue.dart';
+import 'manual_measure_codec.dart';
 import 'realtime_hr_command.dart';
 
 class Spo2Sample {
@@ -24,9 +25,13 @@ class Spo2Command {
     Duration timeout = const Duration(seconds: 40),
   }) async {
     final hr = RealtimeHrCommand(_queue);
+    final profile = ManualAcquireProfile.forSubtype(
+      RingProtocolConstants.manualSpo2Subtype,
+    );
     return hr.measureSubtype(
       RingProtocolConstants.manualSpo2Subtype,
       streamWait: streamWait,
+      minWait: profile.minWait,
       timeout: timeout,
     );
   }

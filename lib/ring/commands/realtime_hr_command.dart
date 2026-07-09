@@ -1,6 +1,6 @@
 // Source: colmi_r06_fbp requestHeartRate + 0x69 parser (BSD-3-Clause)
 // Source: Gadgetbridge YawellRingDeviceSupport CMD_MANUAL_HEART_RATE (AGPL-3.0)
-// Source: QRing btsnoop — 0x69 stream → 0x6a finalize
+// Source: QRing btsnoop — 0x69 acquire window → 0x6a finalize (metric on 6a only)
 
 import 'dart:async';
 
@@ -25,6 +25,8 @@ class RealtimeHrCommand {
   int _measureEpoch = 0;
   Future<void>? _exclusiveMeasure;
 
+  static const Duration _defaultTimeout = Duration(seconds: 40);
+
   void requestCancel() => _measureEpoch++;
 
   /// Stop all manual-measure subtypes (0x6a) — auto→manual handoff.
@@ -33,6 +35,7 @@ class RealtimeHrCommand {
     for (final subtype in const [
       RingProtocolConstants.manualHrSubtype,
       RingProtocolConstants.manualSpo2Subtype,
+      RingProtocolConstants.manualStressMeasureSubtype,
       RingProtocolConstants.manualStressSubtype,
     ]) {
       await _stopSubtype(subtype);
@@ -41,29 +44,40 @@ class RealtimeHrCommand {
   }
 
   Future<LiveHrResult> measureStressOnce({
-    Duration streamWait = const Duration(seconds: 30),
-    Duration timeout = const Duration(seconds: 40),
-  }) =>
-      measureSubtype(
-        RingProtocolConstants.manualStressSubtype,
-        streamWait: streamWait,
-        timeout: timeout,
-      );
+    Duration? streamWait,
+    Duration timeout = _defaultTimeout,
+  }) {
+    final profile = ManualAcquireProfile.forSubtype(
+      RingProtocolConstants.manualStressMeasureSubtype,
+    );
+    return measureSubtype(
+      RingProtocolConstants.manualStressMeasureSubtype,
+      streamWait: streamWait ?? profile.maxWait,
+      minWait: profile.minWait,
+      timeout: timeout,
+    );
+  }
 
-  /// On-demand HR: 0x69 start → stream poll up to 30s → 0x6a finalize → stop.
+  /// 0x69 start → raw PPG stream window → 0x6a finalize (metric on 6a byte[2] only).
   Future<LiveHrResult> measureOnce({
-    Duration streamWait = const Duration(seconds: 30),
-    Duration timeout = const Duration(seconds: 40),
-  }) =>
-      measureSubtype(
-        RingProtocolConstants.manualHrSubtype,
-        streamWait: streamWait,
-        timeout: timeout,
-      );
+    Duration? streamWait,
+    Duration timeout = _defaultTimeout,
+  }) {
+    final profile = ManualAcquireProfile.forSubtype(
+      RingProtocolConstants.manualHrSubtype,
+    );
+    return measureSubtype(
+      RingProtocolConstants.manualHrSubtype,
+      streamWait: streamWait ?? profile.maxWait,
+      minWait: profile.minWait,
+      timeout: timeout,
+    );
+  }
 
   Future<LiveHrResult> measureSubtype(
     int subtype, {
     required Duration streamWait,
+    required Duration minWait,
     required Duration timeout,
   }) =>
       _runExclusive(() async {
@@ -72,15 +86,16 @@ class RealtimeHrCommand {
 
         _queue.startListening();
         _queue.clearLatestOpcode(RingProtocolConstants.cmdStopRealTime);
-        var lastSample = 0;
+        var streamReady = false;
         StreamSubscription<List<int>>? sub;
 
         try {
           sub = _queue
               .pushStream(RingProtocolConstants.cmdManualHeartRate)
               .listen((packet) {
-            final v = ManualMeasureCodec.parseStreamSample(packet, subtype);
-            if (v != null) lastSample = v;
+            if (ManualMeasureCodec.isStreamReady(packet, subtype)) {
+              streamReady = true;
+            }
           });
 
           final start = PacketCodec.makePacket(
@@ -93,10 +108,11 @@ class RealtimeHrCommand {
             timeout: const Duration(seconds: 5),
           );
 
-          lastSample = await _pollStreamSample(
+          await _pollAcquireWindow(
+            minWait: minWait,
             streamWait: streamWait,
             cancelled: cancelled,
-            readSample: () => lastSample,
+            isReady: () => streamReady,
           );
 
           if (cancelled()) {
@@ -105,7 +121,7 @@ class RealtimeHrCommand {
 
           final finalize = PacketCodec.makePacket(
             RingProtocolConstants.cmdStopRealTime,
-            ManualMeasureCodec.finalizePayload(subtype, lastSample: lastSample),
+            ManualMeasureCodec.finalizePayload(subtype),
           );
           final response = await _queue.transact(
             RingProtocolConstants.cmdStopRealTime,
@@ -123,14 +139,8 @@ class RealtimeHrCommand {
           if (parsed.value > 0) {
             return LiveHrResult(bpm: parsed.value, errorCode: 0);
           }
-          if (lastSample > 0) {
-            return LiveHrResult(bpm: lastSample, errorCode: 0);
-          }
           return const LiveHrResult(bpm: 0, errorCode: 2);
         } on TimeoutException {
-          if (lastSample > 0) {
-            return LiveHrResult(bpm: lastSample, errorCode: 0);
-          }
           return const LiveHrResult(bpm: 0, errorCode: 2);
         } finally {
           await sub?.cancel();
@@ -142,19 +152,21 @@ class RealtimeHrCommand {
 
   Future<void> stop() => _stopSubtype(RingProtocolConstants.manualHrSubtype);
 
-  Future<int> _pollStreamSample({
+  /// Wait [minWait]..[streamWait]; early exit once stream ready after min.
+  Future<void> _pollAcquireWindow({
+    required Duration minWait,
     required Duration streamWait,
     required bool Function() cancelled,
-    required int Function() readSample,
+    required bool Function() isReady,
   }) async {
-    final deadline = DateTime.now().add(streamWait);
+    final started = DateTime.now();
+    final deadline = started.add(streamWait);
     while (DateTime.now().isBefore(deadline)) {
-      if (cancelled()) return readSample();
-      final v = readSample();
-      if (v > 0) return v;
+      if (cancelled()) return;
+      final elapsed = DateTime.now().difference(started);
+      if (elapsed >= minWait && isReady()) return;
       await Future<void>.delayed(const Duration(milliseconds: 200));
     }
-    return readSample();
   }
 
   Future<T> _runExclusive<T>(Future<T> Function() fn) async {
