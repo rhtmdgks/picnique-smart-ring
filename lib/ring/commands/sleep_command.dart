@@ -74,23 +74,25 @@ class SleepCommand {
       final sleepEnd = PacketCodec.unpackUint16Le(value, idx);
       idx += 2;
 
-      final now = DateTime.now().toUtc();
-      final sessionStart = DateTime.utc(
-        now.year,
-        now.month,
-        now.day,
+      // ring-health-tracker / Gadgetbridge: local midnight (ring clock = local).
+      // UTC midnight shifts KST sleep by -9h → wrong day window / empty UI.
+      final nowLocal = DateTime.now();
+      final dayMidnight = DateTime(
+        nowLocal.year,
+        nowLocal.month,
+        nowLocal.day,
       ).subtract(Duration(days: daysAgo));
 
-      var startCal = sessionStart;
+      final DateTime startCal;
       if (sleepStart > sleepEnd) {
-        startCal = startCal.subtract(
+        startCal = dayMidnight.subtract(
           Duration(minutes: 1440 - sleepStart),
         );
       } else {
-        startCal = startCal.add(Duration(minutes: sleepStart));
+        startCal = dayMidnight.add(Duration(minutes: sleepStart));
       }
 
-      final endCal = sessionStart.add(Duration(minutes: sleepEnd));
+      final endCal = dayMidnight.add(Duration(minutes: sleepEnd));
 
       final stages = <SleepStageRaw>[];
       var stageTime = startCal;

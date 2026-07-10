@@ -1,6 +1,8 @@
 // Source: colmi_r02_client/colmi_r02_client/steps.py SportDetailParser (MIT)
 // Source: colmi_r06_fbp parseNotifStepsCaloriesDistanceData (BSD-3-Clause)
 
+import 'package:flutter/foundation.dart';
+
 import '../codec/packet_codec.dart';
 import '../ring_protocol_constants.dart';
 import '../transport/ring_command_queue.dart';
@@ -37,6 +39,11 @@ class ActivityCommand {
   final RingCommandQueue _queue;
 
   /// Historical activity for [daysAgo] from ring clock (0=today).
+  ///
+  /// Packet stream (colmi_r02_client SportDetailParser):
+  /// - first `0xf0` = header (calorie protocol flag) — keep collecting
+  /// - first `0xff` = no data — done
+  /// - data slots until `packet[5] == packet[6] - 1` (last index)
   Future<List<ActivitySample>> fetchHistory({int daysAgo = 0}) async {
     final packet = PacketCodec.makePacket(
       RingProtocolConstants.cmdSyncActivity,
@@ -47,18 +54,24 @@ class ActivityCommand {
       timeout: const Duration(seconds: 15),
       done: (p, all) {
         final nr = p[1] & 0xff;
-        if (nr == 0xff || nr == 0xf0) return true;
+        // Empty history — only terminal empty marker ends early.
+        if (nr == 0xff) return true;
+        // Header 0xf0 must NOT end collection (was bug: returned true → 0 samples).
+        if (nr == 0xf0) return false;
         if (p.length < 7) return false;
+        // Last data chunk: index == total-1
         return (p[5] & 0xff) == (p[6] & 0xff) - 1;
       },
     );
     await _queue.writePacket(packet);
     final packets = await packetsFuture;
 
-    return _parseHistory(packets);
+    return parseHistoryPackets(packets);
   }
 
-  List<ActivitySample> _parseHistory(List<List<int>> packets) {
+  /// Visible for tests — colmi_r02_client SportDetailParser.
+  @visibleForTesting
+  static List<ActivitySample> parseHistoryPackets(List<List<int>> packets) {
     if (packets.isEmpty) return [];
     if (packets.first[1] == 0xff) return [];
 
@@ -82,9 +95,10 @@ class ActivityCommand {
       final steps = PacketCodec.unpackUint16Le(packet, 9);
       final distance = PacketCodec.unpackUint16Le(packet, 11);
 
+      // Ring clock = local wall time (same as sleep / Gadgetbridge).
       details.add(
         ActivitySample(
-          timestamp: DateTime.utc(
+          timestamp: DateTime(
             year,
             month,
             day,
@@ -98,6 +112,26 @@ class ActivityCommand {
       );
     }
     return details;
+  }
+
+  /// Native `syncSportDetail` shape for DB upsert.
+  Future<List<Map<String, dynamic>>> fetchDetailMaps({int daysAgo = 0}) async {
+    final samples = await fetchHistory(daysAgo: daysAgo);
+    return samples
+        .map(
+          (s) => <String, dynamic>{
+            'year': s.timestamp.year,
+            'month': s.timestamp.month,
+            'day': s.timestamp.day,
+            'timeIndex':
+                s.timestamp.hour * 4 + (s.timestamp.minute ~/ 15),
+            'calorie': s.calories,
+            'walkSteps': s.steps,
+            'distance': s.distanceMeters,
+            'runSteps': 0,
+          },
+        )
+        .toList();
   }
 
   /// colmi_r06_fbp parseNotifStepsCaloriesDistanceData — 0x73/0x12 push

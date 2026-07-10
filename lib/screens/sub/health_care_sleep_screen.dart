@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:provider/provider.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/health_data_refresh_notifier.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_sleep_sync_service.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/constants/colors.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/constants/fonts.dart';
@@ -50,7 +52,8 @@ class _HealthCareSleepScreenState extends State<HealthCareSleepScreen> {
   int? _latestStress; // 숫자값 보관(라벨 계산용)
 
   (int? h, int? m)? _sleep;
-  late final Future<String> _sleepMessageFuture;
+  Future<String>? _sleepMessageFuture;
+  HealthDataRefreshNotifier? _healthRefresh;
 
   // stress 라벨(unit) 동적 계산
   String get unit => stressToLabel((_latestStress ?? 0).toDouble());
@@ -60,10 +63,46 @@ class _HealthCareSleepScreenState extends State<HealthCareSleepScreen> {
   @override
   void initState() {
     super.initState();
-    // 수면 탭 진입 시 최신 수면 데이터 pull (수동 측정 중이면 스킵).
-    unawaited(RingSleepSyncService.instance.syncDetailIfIdle());
+    // Sync first, then read DB — otherwise UI shows empty stale sleep.
+    unawaited(_syncThenLoad());
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final next = context.read<HealthDataRefreshNotifier>();
+    if (identical(_healthRefresh, next)) return;
+    _healthRefresh?.removeListener(_onHealthDataRefresh);
+    _healthRefresh = next;
+    _healthRefresh!.addListener(_onHealthDataRefresh);
+  }
+
+  @override
+  void dispose() {
+    _healthRefresh?.removeListener(_onHealthDataRefresh);
+    super.dispose();
+  }
+
+  void _onHealthDataRefresh() {
+    if (!(_healthRefresh?.affects(DataType.Sleep) ?? false)) return;
+    // Defer — notifyListeners may fire during build (sync from initState).
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      unawaited(_fetchLatest());
+      setState(() => _sleepMessageFuture = _loadSleepMessages());
+    });
+  }
+
+  Future<void> _syncThenLoad() async {
+    setState(() => _latestLoading = true);
+    try {
+      await RingSleepSyncService.instance.syncDetailIfIdle();
+    } catch (e) {
+      debugPrint('[SLEEP_UI] sync failed: $e');
+    }
+    if (!mounted) return;
     _sleepMessageFuture = _loadSleepMessages();
-    _fetchLatest();
+    await _fetchLatest();
   }
 
   Future<void> _fetchLatest() async {
@@ -171,7 +210,8 @@ class _HealthCareSleepScreenState extends State<HealthCareSleepScreen> {
                 FutureBuilder<String>(
                   future: _sleepMessageFuture,
                   builder: (context, snapshot) {
-                    if (snapshot.connectionState == ConnectionState.waiting) {
+                    if (_sleepMessageFuture == null ||
+                        snapshot.connectionState == ConnectionState.waiting) {
                       return HealthMessageCard(message: "Loading...");
                     } else if (snapshot.hasError) {
                       return HealthMessageCard(

@@ -111,15 +111,19 @@ class _HealthCareActivityScreenState extends State<HealthCareActivityScreen> {
   Future<void> _syncThenLoadAll() async {
     setState(() => _loading = true);
     try {
-      // 필요 시 동기화(최초 한 번 정도)
+      // Pull 0x43 slots into SportDetails (was stub no-op after Dart BLE).
       await syncRecent3DaysSportDetailsToDb(platform);
+      if (!mounted) return;
+      // Refresh live today totals (initState race: live may bind in didChangeDependencies).
+      final live = _liveActivity ?? context.read<RingLiveActivity>();
+      await live.refresh();
 
-      // ✅ 전체 일자 집계
       await _loadAllTotalsByDay(DbManager.I.heartDB);
 
-      // ✅ 선택일 합계 반영
+      if (!mounted) return;
       _applySelected(_selectedDate);
       _onLiveActivityChanged();
+      setState(() => _loading = false);
     } catch (_) {
       if (!mounted) return;
       setState(() {

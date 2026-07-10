@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/widgets.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:picnique_rosary_healthcare_smartring/core/enum/data_type.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/ring.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ble_command_queue.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/battery_notification_service.dart';
@@ -75,6 +76,7 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
       refreshNotifier: healthRefresh,
       liveMetrics: liveMetrics,
     );
+    RingSleepSyncService.instance.bindRefreshNotifier(healthRefresh);
     // 야간 수면 감지 — 기상 시 수면 sync + 야간 축적 생체 데이터 병합.
     RingSleepGate.instance.bind(ring, onWake: _onSleepGateWake);
     if (ring.hasSavedDevice) {
@@ -313,6 +315,16 @@ class RingConnectionCoordinator with WidgetsBindingObserver {
     if (live != null) {
       await live.start();
     }
+
+    // Persist 0x43 sport slots (steps/cal/distance) — stub was no-op after Dart BLE.
+    unawaited(() async {
+      try {
+        await syncRecent3DaysSportDetailsToDb(BleCommandQueue.channel);
+        _healthRefresh?.notifyChanged(DataType.Steps);
+      } catch (e) {
+        debugPrint('[CONNECT] sport sync failed: $e');
+      }
+    }());
 
     try {
       await BleCommandQueue.invoke('enableRealtimeNotifications');

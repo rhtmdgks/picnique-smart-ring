@@ -33,6 +33,9 @@ class HealthDataRefreshNotifier extends ChangeNotifier {
       case 'steps':
       case 'sport_slot':
         return DataType.Steps;
+      case 'sleep':
+      case 'sleep_sample':
+        return DataType.Sleep;
       default:
         return null;
     }

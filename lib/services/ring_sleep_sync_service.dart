@@ -4,10 +4,12 @@ import 'package:drift/drift.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:picnique_rosary_healthcare_smartring/core/constants/ring_measurement_policy.dart';
+import 'package:picnique_rosary_healthcare_smartring/core/enum/data_type.dart';
 import 'package:picnique_rosary_healthcare_smartring/db/app_db.dart';
 import 'package:picnique_rosary_healthcare_smartring/providers/db/db_manager.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ble_command_queue.dart';
 import 'package:picnique_rosary_healthcare_smartring/ring/repository/ring_repository.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/health_data_refresh_notifier.dart';
 import 'package:picnique_rosary_healthcare_smartring/services/ring_session_arbiter.dart';
 
 /// 이벤트 기반 수면 sync — 주기 폴링 대신 다음 시점에만 pull 한다:
@@ -17,23 +19,24 @@ import 'package:picnique_rosary_healthcare_smartring/services/ring_session_arbit
 /// - 아침 첫 foreground 복귀 (마지막 sync 가 오늘 아침 이전일 때)
 /// - 수면 탭 진입 ([syncDetailIfIdle])
 ///
-/// 모든 BLE 호출은 backgroundSync 우선순위([BleCommandQueue.invokeAuto]) +
-/// 세션 충돌 재시도([BleCommandQueue.runWithSessionRetry])로 실행되어
-/// 수동 측정을 방해하지 않는다.
+/// Dart BLE: 한 번의 `0xBC/0x27` pull 이 여러 밤을 담으므로
+/// [syncSleepAll] 한 번으로 저장한다 (네이티브 offset 루프 대체).
 class RingSleepSyncService {
   RingSleepSyncService._();
   static final RingSleepSyncService instance = RingSleepSyncService._();
 
   bool _syncing = false;
   DateTime? _lastSummaryAt;
+  HealthDataRefreshNotifier? _refreshNotifier;
 
   @visibleForTesting
   DateTime? get lastSummaryAt => _lastSummaryAt;
 
-  /// 최근 [days]일 수면 요약을 pull 해 SleepDetails 테이블에 저장한다.
-  ///
-  /// SDK 제약: `syncSleepNew`(신 프로토콜, REM 포함)는 offset 0~1만
-  /// 지원하므로 offset 2 이상은 `syncSleepDisplay`(구 프로토콜)를 쓴다.
+  void bindRefreshNotifier(HealthDataRefreshNotifier? notifier) {
+    _refreshNotifier = notifier;
+  }
+
+  /// 최근 수면 요약을 pull 해 SleepDetails 테이블에 저장한다.
   Future<void> syncSummary({int days = 3}) async {
     if (_syncing) {
       debugPrint('[SLEEP_SYNC] skipped — already syncing');
@@ -55,16 +58,26 @@ class RingSleepSyncService {
       return;
     }
     _syncing = true;
+    var savedNights = 0;
     try {
       await DbManager.I.open();
-      for (var offset = 0; offset < days; offset++) {
-        final segments = offset <= 1
-            ? await _pullSleepNew(offset)
-            : await _pullSleepDisplay(offset);
-        if (segments == null || segments.isEmpty) continue;
-        await _saveNight(segments);
+      final nights = await _pullAllNights();
+      if (nights == null) return;
+
+      for (final night in nights) {
+        final daysAgo = night.daysAgo;
+        if (daysAgo != null && daysAgo >= days) continue;
+        if (night.segments.isEmpty) continue;
+        await _saveNight(night.segments);
+        savedNights++;
       }
       _lastSummaryAt = DateTime.now();
+      if (savedNights > 0) {
+        _refreshNotifier?.notifyChanged(DataType.Sleep);
+        debugPrint('[SLEEP_SYNC] done — $savedNights night(s) saved');
+      } else {
+        debugPrint('[SLEEP_SYNC] done — no nights with stages');
+      }
     } finally {
       _syncing = false;
     }
@@ -101,6 +114,51 @@ class RingSleepSyncService {
     return addr != null && addr.trim().isNotEmpty;
   }
 
+  /// One big-data pull → all nights `{st, et, list:[{d,t}]}`.
+  Future<List<_SleepNight>?> _pullAllNights() async {
+    final Map<dynamic, dynamic>? rsp;
+    try {
+      rsp = await BleCommandQueue.runWithSessionRetry(
+        () => BleCommandQueue.invokeAuto<Map<dynamic, dynamic>>(
+          'syncSleepAll',
+        ),
+      );
+    } catch (e) {
+      debugPrint('[SLEEP_SYNC] syncSleepAll failed: $e — fallback per-offset');
+      return _pullNightsLegacy();
+    }
+    if (rsp == null) return null;
+
+    final rawNights = (rsp['nights'] as List?) ?? const [];
+    final nights = <_SleepNight>[];
+    for (final e in rawNights) {
+      final map = e as Map?;
+      if (map == null) continue;
+      final segments = _segmentsFromNewProto(map);
+      if (segments == null || segments.isEmpty) continue;
+      nights.add(_SleepNight(
+        segments: segments,
+        daysAgo: _asInt(map['daysAgo'], def: -1) >= 0
+            ? _asInt(map['daysAgo'])
+            : null,
+      ));
+    }
+    return nights;
+  }
+
+  /// Fallback when syncSleepAll unavailable — offset 0..1 new, 2+ display.
+  Future<List<_SleepNight>?> _pullNightsLegacy() async {
+    final nights = <_SleepNight>[];
+    for (var offset = 0; offset < 3; offset++) {
+      final segments = offset <= 1
+          ? await _pullSleepNew(offset)
+          : await _pullSleepDisplay(offset);
+      if (segments == null || segments.isEmpty) continue;
+      nights.add(_SleepNight(segments: segments, daysAgo: offset));
+    }
+    return nights;
+  }
+
   /// 신 프로토콜: `{st, et, list:[{d, t}]}` (t: 2=light, 3=deep, 4=rem, 5=awake).
   Future<List<_SleepSegment>?> _pullSleepNew(int offset) async {
     final Map<dynamic, dynamic>? rsp;
@@ -116,17 +174,20 @@ class RingSleepSyncService {
       return null;
     }
     if (rsp == null) return null;
+    return _segmentsFromNewProto(rsp);
+  }
 
-    final st = _asInt(rsp['st']);
-    final rawList = (rsp['list'] as List?) ?? const [];
+  List<_SleepSegment>? _segmentsFromNewProto(Map map) {
+    final st = _asInt(map['st']);
+    final rawList = (map['list'] as List?) ?? const [];
     if (st <= 0 || rawList.isEmpty) return null;
 
     var cursor = st;
     final segments = <_SleepSegment>[];
     for (final e in rawList) {
-      final map = e as Map?;
-      final dSec = _asInt(map?['d']);
-      final t = _asInt(map?['t']);
+      final m = e as Map?;
+      final dSec = _asInt(m?['d']);
+      final t = _asInt(m?['t']);
       if (dSec <= 0) continue;
       final segStart = cursor;
       cursor += dSec;
@@ -246,6 +307,13 @@ class RingSleepSyncService {
     if (v is num) return v.toInt();
     return int.tryParse(v?.toString() ?? '') ?? def;
   }
+}
+
+class _SleepNight {
+  _SleepNight({required this.segments, this.daysAgo});
+
+  final List<_SleepSegment> segments;
+  final int? daysAgo;
 }
 
 class _SleepSegment {

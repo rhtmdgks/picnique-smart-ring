@@ -1059,7 +1059,20 @@ Future<void> syncRecent7DaysStressToDb(
 Future<void> syncRecent3DaysSportDetailsToDb(
   MethodChannel platform,
 ) async {
-  return;
+  try {
+    await DbManager.I.open();
+    final db = DbManager.I.appDB;
+    for (var offset = 0; offset < 3; offset++) {
+      try {
+        await syncAndSaveSportDetails(platform, db, dayOffset: offset);
+      } catch (e) {
+        debugPrint('[SPORT_SYNC] offset=$offset failed: $e');
+      }
+    }
+    debugPrint('[SPORT_SYNC] recent 3 days done');
+  } catch (e) {
+    debugPrint('[SPORT_SYNC] recent 3 days error: $e');
+  }
 }
 
 Future<void> syncRecent3DaysOxygenToDb(

@@ -5,6 +5,8 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:picnique_rosary_healthcare_smartring/ring/commands/sleep_command.dart'
+    show SleepSessionRaw;
 import 'package:picnique_rosary_healthcare_smartring/ring/repository/ring_repository.dart';
 import 'package:picnique_rosary_healthcare_smartring/ring/transport/ring_command_queue.dart'
     as ring_queue;
@@ -190,6 +192,9 @@ class BleCommandQueue {
       case 'disableRosaryTouch':
         return true;
       case 'syncTodaySport':
+        if (!_repo.isConnected || !_repo.isDiscoveryComplete) {
+          throw PlatformException(code: 'NOT_CONNECTED');
+        }
         final samples = await _repo.activity.fetchHistory(daysAgo: 0);
         var steps = 0;
         var cal = 0;
@@ -199,11 +204,28 @@ class BleCommandQueue {
           cal += s.calories;
           dist += s.distanceMeters;
         }
+        debugPrint(
+          '[SPORT] syncTodaySport slots=${samples.length} '
+          'steps=$steps cal=$cal dist=$dist',
+        );
         return {
           'totalSteps': steps,
           'calorie': cal,
           'walkDistance': dist,
         };
+      case 'syncSportDetail':
+        if (!_repo.isConnected || !_repo.isDiscoveryComplete) {
+          throw PlatformException(code: 'NOT_CONNECTED');
+        }
+        final dayOffset = _asInt(
+          (arguments is Map ? arguments['dayOffset'] : null),
+        );
+        final details =
+            await _repo.activity.fetchDetailMaps(daysAgo: dayOffset);
+        debugPrint(
+          '[SPORT] syncSportDetail offset=$dayOffset slots=${details.length}',
+        );
+        return {'details': details};
       case 'syncSleepNew':
       case 'syncSleepDisplay':
         if (!_repo.isConnected || !_repo.isDiscoveryComplete) {
@@ -215,22 +237,79 @@ class BleCommandQueue {
             message: 'de5bf728 big-data GATT not discovered',
           );
         }
+        final args = arguments is Map ? arguments : const <dynamic, dynamic>{};
+        final offset = method == 'syncSleepNew'
+            ? _asInt(args['offset'])
+            : _asInt(args['dayOffset']);
         final sessions = await _repo.sleep.fetchHistory();
-        final list = <Map<String, dynamic>>[];
-        for (final session in sessions) {
+        final session = _sleepSessionForOffset(sessions, offset);
+        if (session == null) return {'list': []};
+
+        if (method == 'syncSleepDisplay') {
+          // Legacy display shape: [{sleepStart, sleepEnd, type}]
+          // type: 1=deep, 2=light/rem, 3=awake
+          final list = <Map<String, dynamic>>[];
           for (final stage in session.stages) {
+            final startSec = stage.start.millisecondsSinceEpoch ~/ 1000;
+            final endSec = startSec + stage.durationMinutes * 60;
+            final displayType = switch (stage.stageByte) {
+              3 => 1, // deep
+              2 || 4 => 2, // light / rem
+              5 => 3, // awake
+              _ => 0,
+            };
+            if (displayType == 0) continue;
             list.add({
+              'sleepStart': startSec,
+              'sleepEnd': endSec,
+              'type': displayType,
+            });
+          }
+          return {'list': list};
+        }
+
+        // syncSleepNew shape: {st, et, list:[{d,t}]}
+        final list = <Map<String, dynamic>>[];
+        for (final stage in session.stages) {
+          list.add({
+            'd': stage.durationMinutes * 60,
+            't': stage.stageByte,
+          });
+        }
+        return {
+          'st': session.start.toUtc().millisecondsSinceEpoch ~/ 1000,
+          'et': session.end.toUtc().millisecondsSinceEpoch ~/ 1000,
+          'list': list,
+        };
+      case 'syncSleepAll':
+        // One 0xBC/0x27 pull → every night in the packet (native offset loop replaced).
+        if (!_repo.isConnected || !_repo.isDiscoveryComplete) {
+          throw PlatformException(code: 'NOT_CONNECTED');
+        }
+        if (!_repo.hasBigDataChannel) {
+          throw PlatformException(
+            code: 'BIG_DATA_UNAVAILABLE',
+            message: 'de5bf728 big-data GATT not discovered',
+          );
+        }
+        final allSessions = await _repo.sleep.fetchHistory();
+        final nights = <Map<String, dynamic>>[];
+        for (final session in allSessions) {
+          final stages = <Map<String, dynamic>>[];
+          for (final stage in session.stages) {
+            stages.add({
               'd': stage.durationMinutes * 60,
               't': stage.stageByte,
             });
           }
+          nights.add({
+            'st': session.start.toUtc().millisecondsSinceEpoch ~/ 1000,
+            'et': session.end.toUtc().millisecondsSinceEpoch ~/ 1000,
+            'daysAgo': _sleepDaysAgo(session.start, session.end),
+            'list': stages,
+          });
         }
-        if (sessions.isEmpty) return {'list': []};
-        return {
-          'st': sessions.first.start.millisecondsSinceEpoch ~/ 1000,
-          'et': sessions.first.end.millisecondsSinceEpoch ~/ 1000,
-          'list': list,
-        };
+        return {'nights': nights};
       case 'syncHeartRate':
         final day = DateTime.now().toUtc();
         final log = await _repo.hrHistory.fetchDayLog(day);
@@ -303,6 +382,42 @@ class BleCommandQueue {
         debugPrint('[BLE] unimplemented method: $method');
         throw PlatformException(code: 'NOT_IMPLEMENTED', message: method);
     }
+  }
+
+  /// Pick sleep session whose wake-day matches [offset] days ago (local).
+  static SleepSessionRaw? _sleepSessionForOffset(
+    List<SleepSessionRaw> sessions,
+    int offset,
+  ) {
+    for (final session in sessions) {
+      final daysAgo = _sleepDaysAgo(session.start, session.end);
+      if (daysAgo == offset) return session;
+    }
+    // Fallback: packet order often newest-first; offset 0 → first with stages.
+    if (offset == 0 && sessions.isNotEmpty) {
+      for (final session in sessions) {
+        if (session.stages.isNotEmpty) return session;
+      }
+      return sessions.first;
+    }
+    return null;
+  }
+
+  static int _sleepDaysAgo(DateTime start, DateTime end) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    // Protocol daysAgo = calendar day of wake (session end).
+    final wakeDay = DateTime(end.year, end.month, end.day);
+    final byEnd = today.difference(wakeDay).inDays;
+    if (byEnd >= 0) return byEnd;
+    final startDay = DateTime(start.year, start.month, start.day);
+    return today.difference(startDay).inDays.clamp(0, 30);
+  }
+
+  static int _asInt(dynamic v, {int def = 0}) {
+    if (v is int) return v;
+    if (v is num) return v.toInt();
+    return int.tryParse(v?.toString() ?? '') ?? def;
   }
 
   static Future<Map<String, dynamic>> _measureHrMap() async {
