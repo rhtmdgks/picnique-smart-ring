@@ -1,3 +1,7 @@
+import 'integrations/rwfit/ring_backend.dart';
+import 'integrations/rwfit/rwfit_session.dart';
+import 'integrations/rwfit/rwfit_history_store.dart';
+import 'integrations/rwfit/rwfit_screen.dart';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -29,20 +33,35 @@ import 'package:picnique_rosary_healthcare_smartring/services/health_live_metric
 import 'package:picnique_rosary_healthcare_smartring/core/constants/fonts.dart';
 import 'package:provider/provider.dart';
 
-void main() async {
+void main() => runPicnique();
+
+Future<void> runPicnique({bool useRwfit = false}) async {
   WidgetsFlutterBinding.ensureInitialized();
   await SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
   ]);
 
+  if (useRwfit && !Platform.isAndroid && !Platform.isIOS) {
+    runApp(const MaterialApp(home: Scaffold(body: Center(child: Text('RWFit은 Android/iOS 전용입니다.')))));
+    return;
+  }
+  if (Platform.isAndroid || Platform.isIOS) {
+    await const MethodChannel('picnique/backend').invokeMethod('selectBackend', {'backend': useRwfit ? 'rwfit' : 'qring'});
+  }
   try {
-    await DbManager.I.open();
+    await DbManager.I.open(filename: useRwfit ? 'rwfit_db.sqlite' : 'db.sqlite');
   } catch (e, st) {
     debugPrint('DbManager.open failed: $e\n$st');
+    rethrow;
   }
 
-  await _ensureBatteryOptExclusion();
-  await BatteryNotificationService.initialize();
+  if (useRwfit) {
+    RingBackend.rwfit = RwfitSession(store: RwfitHistoryStore(DbManager.I.appDB));
+    await RingBackend.rwfit!.restoreBinding();
+  } else {
+    await _ensureBatteryOptExclusion();
+    await BatteryNotificationService.initialize();
+  }
   runApp(
     MultiProvider(
       providers: [
@@ -107,7 +126,8 @@ class MyApp extends StatelessWidget {
       ),
       home: const MainScreenLayout(),
       routes: {
-        '/connect-ring-setting': (_) => ConnectRingSettingScreen(),
+        '/connect-ring-setting': (_) => RingBackend.isRwfit
+            ? RwfitScreen(session: RingBackend.rwfit!) : ConnectRingSettingScreen(),
         '/monitoring-setting': (_) => MonitoringSettingScreen(),
         '/updrade-setting': (_) => MonitoringSettingScreen(),
         '/system-setting': (_) => const SystemSettingScreen(),

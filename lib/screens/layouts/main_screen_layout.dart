@@ -1,3 +1,5 @@
+import '../../integrations/rwfit/ring_backend.dart';
+import '../../core/enum/data_type.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -29,6 +31,16 @@ class MainScreenLayout extends StatefulWidget {
 class _MainScreenLayoutState extends State<MainScreenLayout>
     with WidgetsBindingObserver {
   int currentIndex = 0;
+  bool _rwfitWasBusy = false;
+  void _onRwfitChanged() {
+    final session = RingBackend.rwfit;
+    if (!mounted || session == null) return;
+    if (_rwfitWasBusy && !session.busy) {
+      final refresh = context.read<HealthDataRefreshNotifier>();
+      for (final type in DataType.values) { refresh.notifyChanged(type); }
+    }
+    _rwfitWasBusy = session.busy;
+  }
 
   @override
   void initState() {
@@ -39,6 +51,10 @@ class _MainScreenLayoutState extends State<MainScreenLayout>
 
   Future<void> _startCoordinator() async {
     if (!mounted) return;
+    if (RingBackend.isRwfit) {
+      RingBackend.rwfit!.addListener(_onRwfitChanged);
+      return;
+    }
     await RingConnectionCoordinator.instance.start(
       ring: context.read<Ring>(),
       liveActivity: context.read<RingLiveActivity>(),
@@ -51,12 +67,13 @@ class _MainScreenLayoutState extends State<MainScreenLayout>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    RingBackend.rwfit?.removeListener(_onRwfitChanged);
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
+    if (state == AppLifecycleState.resumed && !RingBackend.isRwfit) {
       unawaited(RingPendingImport.importAll(
         refreshNotifier: context.read<HealthDataRefreshNotifier>(),
       ));

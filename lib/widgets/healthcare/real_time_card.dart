@@ -1,3 +1,7 @@
+import '../../integrations/rwfit/ring_backend.dart';
+import 'package:rwfit_ble/rwfit_ble.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/health_data_refresh_notifier.dart';
+import 'package:picnique_rosary_healthcare_smartring/services/health_live_metrics.dart';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -83,14 +87,14 @@ class _RealTimeDataCardState extends State<RealTimeDataCard> {
     HapticFeedback.lightImpact();
 
     final ring = context.read<Ring>();
-    if (!ring.isConnected) {
+    if (!(RingBackend.rwfit?.ready ?? ring.isConnected)) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(_notReadyMessage(ring))),
       );
       return;
     }
 
-    if (!ring.sdkReady) {
+    if (!RingBackend.isRwfit && !ring.sdkReady) {
       showDialog(
         context: context,
         barrierDismissible: false,
@@ -152,7 +156,29 @@ class _RealTimeDataCardState extends State<RealTimeDataCard> {
     }
 
     try {
-      final res = await RingMeasurementService.measureManual(widget.dataType);
+      final Map<String, dynamic> res;
+      final rwfit = RingBackend.rwfit;
+      if (rwfit != null) {
+        final metric = switch (widget.dataType) {
+          DataType.HeartRate => RealtimeMetric.hr,
+          DataType.Oxygen => RealtimeMetric.bloodOxy,
+          DataType.Stress => RealtimeMetric.pressure,
+          _ => throw UnsupportedError('지원하지 않는 측정입니다.'),
+        };
+        // The RWFit session serializes measurement and persists the final sample.
+        await rwfit.measure(metric);
+        final value = rwfit.latestMeasurement?.value;
+        if (value == null || !value.isFinite || value <= 0) {
+          throw StateError('유효한 측정값을 받지 못했습니다.');
+        }
+        res = {'value': value};
+        if (context.mounted) {
+          context.read<HealthLiveMetrics>().record(widget.dataType, value.round());
+          context.read<HealthDataRefreshNotifier>().notifyChanged(widget.dataType);
+        }
+      } else {
+        res = await RingMeasurementService.measureManual(widget.dataType);
+      }
 
       if (!context.mounted) return;
       dismissMeasuringDialog();

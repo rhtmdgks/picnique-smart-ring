@@ -18,8 +18,27 @@ class MainActivity : FlutterActivity() {
         const val BACKGROUND_CHANNEL = "com.example.picnique_ring/background_keepalive"
     }
 
+    private var selectedBackend: String? = null
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        // Both SDKs are selected by Dart. Never resurrect the retired OEM bridge.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "picnique/backend")
+            .setMethodCallHandler { call, result ->
+                if (call.method != "selectBackend") {
+                    result.notImplemented()
+                } else {
+                    val backend = call.argument<String>("backend")
+                    if (backend != "qring" && backend != "rwfit") {
+                        result.error("invalid_backend", "Unknown BLE backend", null)
+                    } else if (selectedBackend != null && selectedBackend != backend) {
+                        result.error("backend_locked", "Restart the application to change BLE backend", null)
+                    } else {
+                        selectedBackend = backend
+                        result.success(true)
+                    }
+                }
+            }
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, BLE_CHANNEL)
             .setMethodCallHandler { call: MethodCall, result: MethodChannel.Result ->

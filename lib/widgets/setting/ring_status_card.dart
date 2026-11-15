@@ -1,3 +1,4 @@
+import '../../integrations/rwfit/ring_backend.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'dart:io' show Platform;
@@ -32,6 +33,13 @@ class RingStatusCard extends StatelessWidget {
   );
 
   Future<void> _disconnect(BuildContext context, Ring ringProvider) async {
+    if (RingBackend.isRwfit) {
+      try { await RingBackend.rwfit!.disconnect(); }
+      catch (e) {
+        if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('연결 해제 실패: $e')));
+      }
+      return;
+    }
     String? deviceAddress(BluetoothDevice d) {
       try {
         // ignore: deprecated_member_use

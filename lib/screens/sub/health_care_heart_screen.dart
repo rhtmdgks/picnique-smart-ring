@@ -1,3 +1,4 @@
+import '../../integrations/rwfit/ring_backend.dart';
 import 'dart:async';
 
 import 'package:drift/drift.dart' hide Column;
@@ -145,8 +146,10 @@ class _HealthCareHeartScreenState extends State<HealthCareHeartScreen> {
     setState(() => _latestLoading = true);
     try {
       // iOS: bulk HR sync는 pending import·수동 측정과 BLE 충돌 → DB만 갱신
-      if (syncFromRing && !Platform.isIOS) {
-        await syncRecent3DaysHeartToDb(BleCommandQueue.channel);
+      if (syncFromRing) {
+        await RingBackend.refresh(() async {
+          if (!Platform.isIOS) await syncRecent3DaysHeartToDb(BleCommandQueue.channel);
+        });
       }
       final db = DbManager.I.heartDB;
 

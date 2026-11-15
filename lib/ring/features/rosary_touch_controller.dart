@@ -1,3 +1,4 @@
+import '../../integrations/rwfit/ring_backend.dart';
 // Source: colmi_r06_fbp parseRawAccelerometerSensorData + tap logic (BSD-3-Clause)
 // Adapted from lib/util/TouchCounter.dart rosary tap debounce
 
@@ -24,12 +25,23 @@ class RosaryTouchController with ChangeNotifier {
   DateTime? _lastTapAt;
 
   int tapCount = 0;
+  int _lastRwfitCount = 0;
+  void _onRwfitTouch() {
+    final session = RingBackend.rwfit;
+    if (!_listening || session == null) return;
+    _ringTouchActive = session.ready;
+    final count = session.singleTaps;
+    if (count > _lastRwfitCount) tapCount += count - _lastRwfitCount;
+    _lastRwfitCount = count;
+    notifyListeners();
+  }
 
   bool get isListening => _listening;
   bool get ringTouchActive => _ringTouchActive;
 
   Future<void> start({Object? ring}) async {
     if (_listening) return;
+    if (RingBackend.rwfit?.busy == true) return;
     if (!RingSessionArbiter.instance.enter(RingSessionMode.rosaryTouch)) {
       debugPrint('[ROSARY] start rejected — another ring session active');
       return;
@@ -38,6 +50,14 @@ class RosaryTouchController with ChangeNotifier {
     _listening = true;
     notifyListeners();
 
+    if (RingBackend.isRwfit) {
+      final session = RingBackend.rwfit!;
+      _lastRwfitCount = session.singleTaps;
+      _ringTouchActive = session.ready;
+      session.addListener(_onRwfitTouch);
+      notifyListeners();
+      return;
+    }
     await RingAutoMeasurementService.instance.pauseForTouch();
 
     if (!_repo.isConnected) {
@@ -65,6 +85,13 @@ class RosaryTouchController with ChangeNotifier {
   Future<void> stop() async {
     if (!_listening) return;
     _listening = false;
+    if (RingBackend.isRwfit) {
+      RingBackend.rwfit!.removeListener(_onRwfitTouch);
+      _ringTouchActive = false;
+      RingSessionArbiter.instance.exitToBackground();
+      notifyListeners();
+      return;
+    }
     await _accelSub?.cancel();
     _accelSub = null;
     _lastTapAt = null;
@@ -80,6 +107,13 @@ class RosaryTouchController with ChangeNotifier {
     RingSessionArbiter.instance.exitToBackground();
     RingAutoMeasurementService.instance.resumeAfterTouch();
     notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    RingBackend.rwfit?.removeListener(_onRwfitTouch);
+    _accelSub?.cancel();
+    super.dispose();
   }
 
   void _onAccel(AccelerometerSample sample) {

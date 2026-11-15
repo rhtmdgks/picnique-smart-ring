@@ -1,3 +1,4 @@
+import '../integrations/rwfit/ring_backend.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -6,6 +7,27 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:picnique_rosary_healthcare_smartring/_mock/mockRing.dart';
 
 class Ring with ChangeNotifier {
+  Ring() { RingBackend.rwfit?.addListener(_fromRwfit); }
+  void _fromRwfit() {
+    final session = RingBackend.rwfit;
+    if (session == null) return;
+    _isConnected = session.ready;
+    _sdkReady = session.ready;
+    _isReconnecting = false;
+    _battery = session.battery;
+    _batteryFromRealtime = session.battery != null;
+    _name = session.device?.name ?? session.savedDevice?.name;
+    final d = session.device ?? session.savedDevice;
+    _address = d == null ? null : session.identity(d);
+    _savedName = session.savedDevice?.name;
+    _savedAddress = session.savedDevice == null ? null : session.identity(session.savedDevice!);
+    notifyListeners();
+  }
+  @override
+  void dispose() {
+    RingBackend.rwfit?.removeListener(_fromRwfit);
+    super.dispose();
+  }
   static const _kAddress = 'ring_address';
   static const _kName = 'ring_name';
   static const _kBattery = 'ring_battery';
@@ -208,6 +230,7 @@ class Ring with ChangeNotifier {
   }
 
   Future<void> loadFromPrefs() async {
+    if (RingBackend.isRwfit) { _fromRwfit(); return; }
     await restorePersistedDevice();
     final prefs = await SharedPreferences.getInstance();
     _address ??= prefs.getString(_kAddress);
@@ -217,6 +240,7 @@ class Ring with ChangeNotifier {
   }
 
   Future<void> restorePersistedDevice() async {
+    if (RingBackend.isRwfit) { _fromRwfit(); return; }
     final prefs = await SharedPreferences.getInstance();
     _savedAddress = prefs.getString(_kSavedAddress) ??
         prefs.getString(_kAddress);

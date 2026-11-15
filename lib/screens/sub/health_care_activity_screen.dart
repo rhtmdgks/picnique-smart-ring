@@ -1,3 +1,4 @@
+import '../../integrations/rwfit/ring_backend.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:picnique_rosary_healthcare_smartring/db/app_db.dart';
@@ -86,7 +87,7 @@ class _HealthCareActivityScreenState extends State<HealthCareActivityScreen> {
   bool _isSelectedToday() => _day0(_selectedDate) == _day0(DateTime.now());
 
   void _onLiveActivityChanged() {
-    if (!mounted || !_isSelectedToday()) return;
+    if (RingBackend.isRwfit || !mounted || !_isSelectedToday()) return;
     final ring = context.read<Ring>();
     final live = _liveActivity;
     if (!ring.isConnected || live == null || !live.isTracking) return;
@@ -112,11 +113,11 @@ class _HealthCareActivityScreenState extends State<HealthCareActivityScreen> {
     setState(() => _loading = true);
     try {
       // Pull 0x43 slots into SportDetails (was stub no-op after Dart BLE).
-      await syncRecent3DaysSportDetailsToDb(platform);
+      await RingBackend.refresh(() => syncRecent3DaysSportDetailsToDb(platform));
       if (!mounted) return;
       // Refresh live today totals (initState race: live may bind in didChangeDependencies).
       final live = _liveActivity ?? context.read<RingLiveActivity>();
-      await live.refresh();
+      if (!RingBackend.isRwfit) await live.refresh();
 
       await _loadAllTotalsByDay(DbManager.I.heartDB);
 

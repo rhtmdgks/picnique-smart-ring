@@ -18,7 +18,7 @@ part 'table.dart'; // 테이블 정의 (SleepOveralls, SleepDetails, HeartDetail
   ],
 )
 class AppDatabase extends _$AppDatabase {
-  AppDatabase() : super(_openConnection());
+  AppDatabase({String filename = 'db.sqlite'}) : super(_openConnection(filename));
 
   /// 테스트용 — in-memory 등 임의 executor 주입.
   AppDatabase.forTesting(super.e);
@@ -280,10 +280,10 @@ class AppDatabase extends _$AppDatabase {
 }
 
 // DB 파일 경로 설정
-LazyDatabase _openConnection() {
+LazyDatabase _openConnection(String filename) {
   return LazyDatabase(() async {
     final dbFolder = await getApplicationDocumentsDirectory();
-    final file = File(p.join(dbFolder.path, 'db.sqlite'));
+    final file = File(p.join(dbFolder.path, filename));
     return NativeDatabase(file);
   });
 }

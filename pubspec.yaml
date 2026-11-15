@@ -15,6 +15,11 @@ dependencies:
   intl: ^0.20.2
   provider: ^6.1.5
   flutter_blue_plus: ^1.35.5
+  # SDK snapshot supplied in the Picnique Inc. project.
+  rwfit_ble:
+    git:
+      url: https://github.com/RWFitSDK/RW_flutter_plugin.git
+      ref: be17a8f306e19aa3de2e306c044d94e5d76c691f
   url_launcher: ^6.0.0
   drift: ^2.28.1
   drift_flutter: ^0.2.5

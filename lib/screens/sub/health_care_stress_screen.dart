@@ -1,3 +1,4 @@
+import '../../integrations/rwfit/ring_backend.dart';
 import 'dart:async';
 import 'dart:io';
 
@@ -113,8 +114,10 @@ class _HealthCareStressScreenState extends State<HealthCareStressScreen> {
     setState(() => _latestLoading = true);
     try {
       // iOS: bulk stress sync는 pending import·수동 측정과 BLE 충돌
-      if (!skipSync && !Platform.isIOS) {
-        await syncRecent7DaysStressToDb(platform);
+      if (!skipSync) {
+        await RingBackend.refresh(() async {
+          if (!Platform.isIOS) await syncRecent7DaysStressToDb(platform);
+        });
       }
 
       final db = DbManager.I.heartDB;

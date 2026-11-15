@@ -8,8 +8,8 @@ class DbManager {
   AppDatabase? _db;
 
   /// 앱 시작 시 한 번 호출
-  Future<void> open() async {
-    _db ??= AppDatabase();
+  Future<void> open({String filename = 'db.sqlite'}) async {
+    _db ??= AppDatabase(filename: filename);
   }
 
   /// 테스트용 — in-memory DB 등으로 교체.

@@ -2,6 +2,7 @@ allprojects {
     repositories {
         google()
         mavenCentral()
+        maven { url = uri("${project(":rwfit_ble").projectDir}/repo") }
         flatDir {
             dirs("${rootProject.projectDir}/app/libs")
         }

@@ -1,3 +1,4 @@
+import '../../integrations/rwfit/ring_backend.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -125,7 +126,7 @@ class _HealthCareOxygenScreenState extends State<HealthCareOxygenScreen> {
     try {
       // 1) 최근 3일 산소 데이터 동기화
       // 프로젝트에 없다면 주석 처리
-      await syncRecent3DaysOxygenToDb(platform);
+      await RingBackend.refresh(() => syncRecent3DaysOxygenToDb(platform));
 
       final db = DbManager.I.heartDB;
 

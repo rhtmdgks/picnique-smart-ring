@@ -1,3 +1,4 @@
+import '../../integrations/rwfit/ring_backend.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -96,7 +97,9 @@ class _HealthCareSleepScreenState extends State<HealthCareSleepScreen> {
   Future<void> _syncThenLoad() async {
     setState(() => _latestLoading = true);
     try {
-      await RingSleepSyncService.instance.syncDetailIfIdle();
+      await RingBackend.refresh(() async {
+        await RingSleepSyncService.instance.syncDetailIfIdle();
+      });
     } catch (e) {
       debugPrint('[SLEEP_UI] sync failed: $e');
     }
